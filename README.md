@@ -1,4 +1,0 @@
-BinarySpacePartition
-====================
-
-XMonad Layout
