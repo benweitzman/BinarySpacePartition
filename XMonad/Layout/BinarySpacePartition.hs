@@ -13,13 +13,7 @@
 --
 -----------------------------------------------------------------------------
  
-module XMonad.Layout.BinarySpacePartition (BinarySpacePartition(..)
-                                          , BSP(..)
-                                          , Rotate(..)
-                                          , ResizeDirectional(..)
-                                          , Bound(..)
-                                          , Swap(..)
-                                          ) where
+module XMonad.Layout.BinarySpacePartition where
 
 import XMonad
 import XMonad.Core
@@ -47,17 +41,52 @@ opposite :: Direction -> Direction
 opposite Vertical = Horizontal
 opposite Horizontal = Vertical
 
-data BSP = EmptyBSP | Leaf | Split { left :: BSP
-                                   , right :: BSP
-                                   , direction :: Direction
-                                   , ratio :: Rational
-                                   } deriving (Show, Read)
+data Split = Split { direction :: Direction
+                   , ratio :: Rational
+                   } deriving (Show, Read)
+
+data Tree a = Leaf | Node { value :: a, left :: Tree a, right :: Tree a } deriving (Show, Read)
+
+leaf :: Tree a -> Bool
+leaf Leaf = True
+leaf _ = False
+
+numLeaves :: Tree a -> Int
+numLeaves Leaf = 1
+numLeaves (Node _ left right) = numLeaves left + numLeaves right
+
+type BSP = Tree Split
 
 size :: BSP -> Int
-size EmptyBSP = 0
-size Leaf = 1
-size (Split l r _ _) = size l + size r
+size = numLeaves
 
+data BSPCrumb = LeftCrumb Split BSP | RightCrumb Split BSP deriving (Show, Read)
+
+type BSPZipper = (BSP, [BSPCrumb])
+
+goLeft :: BSPZipper -> Maybe BSPZipper
+goLeft (Leaf, _) = Nothing
+goLeft (Node x l r, bs) = Just (l, LeftCrumb x r:bs)
+
+goRight :: BSPZipper -> Maybe BSPZipper
+goRight (Leaf, _) = Nothing
+goRight (Node x l r, bs) = Just (r, RightCrumb x l:bs)
+
+goUp :: BSPZipper -> Maybe BSPZipper
+goUp (_, []) = Nothing
+goUp (bsp, LeftCrumb x r:bs) = Just (Node x bsp r, bs)
+goUp (bsp, RightCrumb x l:bs) = Just (Node x l bsp, bs)
+
+modify :: (Split -> Split) -> BSPZipper -> Maybe BSPZipper
+modify _ (Leaf, bs) = Just (Leaf, bs)
+modify f (Node x l r, bs) = Just (Node (f x) l r, bs)
+
+top :: BSPZipper -> BSPZipper
+top z = case (goUp z) of
+         Nothing -> z
+         Just (z') -> z'
+
+{-
 index :: W.Stack a -> Int
 index s = case toIndex (Just s) of 
             (_, Nothing) -> 0
@@ -216,3 +245,5 @@ rightGrowNth = applyToNth (BSPAction EmptyBSP
                                          _ -> error "Impossible")
                                      (\x -> error "Not implemented"))
                           bubbleMerge
+
+-}
