@@ -13,7 +13,10 @@
 --
 -----------------------------------------------------------------------------
  
-module XMonad.Layout.BinarySpacePartition where
+module XMonad.Layout.BinarySpacePartition (
+    BinarySpacePartition,
+    emptyBSP,
+    ) where
 
 import XMonad
 import XMonad.Core
@@ -22,6 +25,7 @@ import XMonad.Util.Stack
 import qualified Data.Map as M
 import Data.List ((\\))
 import Control.Monad
+import Data.Maybe
 
 data Rotate = Rotate deriving Typeable
 instance Message Rotate
@@ -41,11 +45,24 @@ opposite :: Direction -> Direction
 opposite Vertical = Horizontal
 opposite Horizontal = Vertical
 
+split :: Direction -> Rational -> Rectangle -> (Rectangle, Rectangle)
+split Horizontal r (Rectangle sx sy sw sh) = (r1, r2) where 
+    r1 = Rectangle sx sy sw sh'
+    r2 = Rectangle sx (sy + fromIntegral sh') sw (sh - sh')
+    sh' = floor $ fromIntegral sh * r
+split Vertical r (Rectangle sx sy sw sh) = (r1, r2) where
+    r1 = Rectangle sx sy sw' sh
+    r2 = Rectangle (sx + fromIntegral sw') sy (sw - sw') sh
+    sw' = floor $ fromIntegral sw * r
+
 data Split = Split { direction :: Direction
                    , ratio :: Rational
                    } deriving (Show, Read)
 
-data Tree a = Leaf | Node { value :: a, left :: Tree a, right :: Tree a } deriving (Show, Read)
+data Tree a = Leaf | Node { value :: a
+                          , left :: Tree a
+                          , right :: Tree a 
+                          } deriving (Show, Read)
 
 leaf :: Tree a -> Bool
 leaf Leaf = True
@@ -53,12 +70,9 @@ leaf _ = False
 
 numLeaves :: Tree a -> Int
 numLeaves Leaf = 1
-numLeaves (Node _ left right) = numLeaves left + numLeaves right
+numLeaves (Node _ l r) = numLeaves l + numLeaves r
 
 type BSP = Tree Split
-
-size :: BSP -> Int
-size = numLeaves
 
 data BSPCrumb = LeftCrumb Split BSP | RightCrumb Split BSP deriving (Show, Read)
 
@@ -83,19 +97,41 @@ modify f (Node x l r, bs) = Just (Node (f x) l r, bs)
 
 top :: BSPZipper -> BSPZipper
 top z = case (goUp z) of
-         Nothing -> z
-         Just (z') -> z'
+          Nothing -> z
+          Just (z') -> z'
 
-{-
 index :: W.Stack a -> Int
 index s = case toIndex (Just s) of 
             (_, Nothing) -> 0
             (_, Just int) -> int
                        
-data BinarySpacePartition a = BinarySpacePartition BSP deriving (Show, Read)
+data BinarySpacePartition a = BinarySpacePartition { bsp :: Maybe BSP } deriving (Show, Read)
 
+emptyBSP :: BinarySpacePartition a
+emptyBSP = BinarySpacePartition Nothing
+
+makeBSP :: BSP -> BinarySpacePartition a
+makeBSP = BinarySpacePartition . Just
+
+size :: BinarySpacePartition a -> Int
+size = fromMaybe 0 . fmap numLeaves . bsp
+
+rectangles :: BinarySpacePartition a -> Rectangle -> [Rectangle]
+rectangles (BinarySpacePartition Nothing) _ = []
+rectangles (BinarySpacePartition (Just Leaf)) rootRect = [rootRect]
+rectangles (BinarySpacePartition (Just node)) rootRect = 
+    rectangles (makeBSP . left $ node) leftBox ++ 
+    rectangles (makeBSP . right $ node) rightBox 
+    where (leftBox, rightBox) = split (direction info) (ratio info) rootRect
+          info = value node
+
+splitNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a
+splitNth (BinarySpacePartition Nothing) _ = makeBSP Leaf
+splitNth (BinarySpacePartition (Just Leaf)) _ = makeBSP $ Node (Split Vertical 0.5)  Leaf Leaf
+
+{-
 instance LayoutClass BinarySpacePartition a where
-  doLayout cur@(BinarySpacePartition bsp) r s = return (zip ws rs, layout) where
+  doLayout bsp r s = return (zip ws rs, layout) where
     ws = W.integrate s
     count = size bsp
     layout = if l == count then Just (cur)
@@ -125,22 +161,6 @@ instance LayoutClass BinarySpacePartition a where
           swap Swap s = BinarySpacePartition $ swapNth bsp $ index s
   description _  = "BSP"
 
-split :: Direction -> Rational -> Rectangle -> (Rectangle, Rectangle)
-split Horizontal r (Rectangle sx sy sw sh) = (r1, r2) where 
-    r1 = Rectangle sx sy sw sh'
-    r2 = Rectangle sx (sy + fromIntegral sh') sw (sh - sh')
-    sh' = floor $ fromIntegral sh * r
-split Vertical r (Rectangle sx sy sw sh) = (r1, r2) where
-    r1 = Rectangle sx sy sw' sh
-    r2 = Rectangle (sx + fromIntegral sw') sy (sw - sw') sh
-    sw' = floor $ fromIntegral sw * r
-
-rectangles :: BSP -> Rectangle -> [Rectangle]
-rectangles EmptyBSP _ = []
-rectangles Leaf rootRect = [rootRect]
-rectangles (Split l r d ra) rootRect = 
-    rectangles l leftBox ++ rectangles r rightBox where
-    (leftBox, rightBox) = split d ra rootRect
 
 {-rightMostSplit :: BSP -> BSP
 rightMostSplit EmptyBSP = Leaf
@@ -172,14 +192,6 @@ bubbleMerge = BSPMerge (\parent child -> case parent of
                            _ -> error "Impossible")
                            
 
-applyToNth :: forall a. BSPAction a -> BSPMerge a -> BSP -> Int -> a
-applyToNth action _ EmptyBSP _ = emptyAction action
-applyToNth action _ parent@(Split Leaf _ _ _) 0 = leftLeafAction action $ parent
-applyToNth action _ parent@(Split l Leaf _ _) n | size l <= n = rightLeafAction action $ parent
-applyToNth action _ Leaf _ = leafAction action
-applyToNth action merge parent@(Split l r _ _) n = if size l > n
-                                     then (leftMerge merge) parent (applyToNth action merge l n)
-                                     else (rightMerge merge) parent (applyToNth action merge r n)
 
 rightLeaf, leftLeaf :: BSP -> Int -> Bool
 rightLeaf = applyToNth (BSPAction False True (const False) (const True)) constMerge
@@ -244,6 +256,5 @@ rightGrowNth = applyToNth (BSPAction EmptyBSP
                                          (Split Leaf r Horizontal ra) -> error "Not implemented"
                                          _ -> error "Impossible")
                                      (\x -> error "Not implemented"))
-                          bubbleMerge
+                          bubbleMerge -}
 
--}
