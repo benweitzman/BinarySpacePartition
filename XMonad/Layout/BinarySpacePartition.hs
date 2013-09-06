@@ -13,12 +13,13 @@
 --
 -----------------------------------------------------------------------------
  
-module XMonad.Layout.BinarySpacePartition (
-    BinarySpacePartition(..),
-    emptyBSP,
-    Rotate(..),
-    Swap(..)
-    ) where
+module XMonad.Layout.BinarySpacePartition (BinarySpacePartition(..)
+                                          , emptyBSP
+                                          , Rotate(..)
+                                          , Swap(..)
+                                          , ResizeDirectional(..)
+                                          , Bound(..)
+                                          ) where
 
 import XMonad
 import XMonad.Core
@@ -40,7 +41,7 @@ instance Message ResizeDirectional
 data Swap = Swap deriving Typeable
 instance Message Swap
 
-data Direction = Horizontal | Vertical deriving (Show, Read)
+data Direction = Horizontal | Vertical deriving (Show, Read, Eq)
 
 opposite :: Direction -> Direction
 opposite Vertical = Horizontal
@@ -58,15 +59,18 @@ split Vertical r (Rectangle sx sy sw sh) = (r1, r2) where
 
 data Split = Split { direction :: Direction
                    , ratio :: Rational
-                   } deriving (Show, Read)
+                   } deriving (Show, Read, Eq)
                               
 oppositeDirection :: Split -> Split
 oppositeDirection (Split d r) = Split (opposite d) r
 
+increaseRatio :: Split -> Rational -> Split
+increaseRatio (Split d r) delta = Split d (min 0.9 (max 0.1 (r + delta))) 
+
 data Tree a = Leaf | Node { value :: a
                           , left :: Tree a
                           , right :: Tree a 
-                          } deriving (Show, Read)
+                          } deriving (Show, Read, Eq)
 
 leaf :: Tree a -> Bool
 leaf Leaf = True
@@ -78,7 +82,11 @@ numLeaves (Node _ l r) = numLeaves l + numLeaves r
 
 type BSP = Tree Split
 
-data BSPCrumb = LeftCrumb Split BSP | RightCrumb Split BSP deriving (Show, Read)
+data BSPCrumb = LeftCrumb Split BSP | RightCrumb Split BSP deriving (Show, Read, Eq)
+
+swapCrumb :: BSPCrumb -> BSPCrumb 
+swapCrumb (LeftCrumb s t) = RightCrumb s t
+swapCrumb (RightCrumb s t) = LeftCrumb s t
 
 parentSplit :: BSPCrumb -> Split
 parentSplit (LeftCrumb s _) = s
@@ -106,9 +114,12 @@ goUp (_, []) = Nothing
 goUp (t, LeftCrumb x r:cs) = Just (Node x t r, cs)
 goUp (t, RightCrumb x l:cs) = Just (Node x l t, cs)
 
-modify :: (Split -> Split) -> BSPZipper -> Maybe BSPZipper
-modify _ (Leaf, cs) = Just (Leaf, cs)
-modify f (Node x l r, cs) = Just (Node (f x) l r, cs)
+modifySplit :: (Split -> Split) -> BSPZipper -> Maybe BSPZipper
+modifySplit _ (Leaf, cs) = Just (Leaf, cs)
+modifySplit f (Node x l r, cs) = Just (Node (f x) l r, cs)
+
+modifyBSP :: (BSP -> BSP) -> BSPZipper -> Maybe BSPZipper
+modifyBSP f (t, cs) = Just (f t, cs)
 
 goToNthLeaf :: Int -> BSPZipper -> Maybe BSPZipper
 goToNthLeaf _ z@(Leaf, _) = Just z
@@ -135,6 +146,20 @@ rotateCurrentLeaf (Leaf, []) = Just (Leaf, [])
 rotateCurrentLeaf (Leaf, c:cs) = Just (Leaf, modifyParentSplit oppositeDirection c:cs)
 rotateCurrentLeaf _ = Nothing
 
+swapCurrentLeaf :: BSPZipper -> Maybe BSPZipper
+swapCurrentLeaf (Leaf, []) = Just (Leaf, [])
+swapCurrentLeaf (Leaf, c:cs) = Just (Leaf, swapCrumb c:cs) 
+swapCurrentLeaf _ = Nothing
+
+expandTreeTowards :: Bound -> BSPZipper -> Maybe BSPZipper
+expandTreeTowards _ z@(_, []) = Just z
+expandTreeTowards East z@(t, LeftCrumb s r:cs) 
+  | direction s == Vertical = Just (t, LeftCrumb (increaseRatio s 0.1) r:cs)
+  | otherwise  = do z' <- goUp z
+                    expandTreeTowards East z'
+expandTreeTowards East z = do z' <- goUp z                    
+                              expandTreeTowards East z'
+                              
 top :: BSPZipper -> BSPZipper
 top z = case (goUp z) of
           Nothing -> z
@@ -195,12 +220,34 @@ removeNth b n = zipperToBinarySpacePartition zipper
                     
 rotateNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a                    
 rotateNth (BinarySpacePartition Nothing) _ = emptyBSP
-rotateNth (BinarySpacePartition (Just Leaf)) _ = emptyBSP
+rotateNth b@(BinarySpacePartition (Just Leaf)) _ = b
 rotateNth b n = zipperToBinarySpacePartition zipper
   where zipper = do z <- makeZipper b
                     z' <- (goToNthLeaf n) z
                     z'' <- rotateCurrentLeaf z'
                     return z'' 
+                                        
+swapNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a
+swapNth (BinarySpacePartition Nothing) _ = emptyBSP
+swapNth b@(BinarySpacePartition (Just Leaf)) _ = b
+swapNth b n = zipperToBinarySpacePartition zipper
+  where zipper = do z <- makeZipper b
+                    z' <- (goToNthLeaf n) z
+                    z'' <- goUp z'
+                    z''' <- modifyBSP (\t -> case t of 
+                                               Leaf -> Leaf
+                                               Node x l r -> Node x r l)
+                                      z''
+                    return z'''
+                    
+growNthTowards :: Bound -> BinarySpacePartition a -> Int -> BinarySpacePartition a
+growNthTowards _ (BinarySpacePartition Nothing) _ = emptyBSP
+growNthTowards _ b@(BinarySpacePartition (Just Leaf)) _ = b
+growNthTowards dir b n = zipperToBinarySpacePartition zipper
+  where zipper = do z <- makeZipper b
+                    z' <- (goToNthLeaf n) z
+                    z'' <- expandTreeTowards dir z'
+                    return z''
 
 instance LayoutClass BinarySpacePartition a where
   doLayout b r s = return (zip ws rs, layout) where
@@ -221,7 +268,7 @@ instance LayoutClass BinarySpacePartition a where
        fs <- (M.keys . W.floating) `fmap` gets windowset
        return $ ms >>= unfloat fs >>= handleMesg
     where handleMesg s = msum [fmap (\x -> rotate x s) (fromMessage m)
-                              --,fmap (\x -> resize x s) (fromMessage m)
+                              ,fmap (\x -> resize x s) (fromMessage m)
                               ,fmap (\x -> swap x s) (fromMessage m)
                               ]
           unfloat fs s = if W.focus s `elem` fs
@@ -229,99 +276,12 @@ instance LayoutClass BinarySpacePartition a where
                          else Just (s { W.up = (W.up s) \\ fs
                                       , W.down = (W.down s) \\ fs })
           rotate Rotate s = rotateNth b $ index s
-          swap Swap _ = emptyBSP
-{-
---          resize (ExpandTowards East) s = BinarySpacePartition $ rightGrowNth bsp $ index s
-          swap Swap s = BinarySpacePartition $ swapNth bsp $ index s
-  description _  = "BSP"
+          swap Swap s = swapNth b $ index s
+          resize (ExpandTowards East) s = growNthTowards East b $ index s
+  --description _  = "BSP"
 
 
-{-rightMostSplit :: BSP -> BSP
-rightMostSplit EmptyBSP = Leaf
-rightMostSplit (Split l Leaf d r) = 
-    Split l (Split Leaf Leaf (opposite d) 0.5) d r
-rightMostSplit Leaf = Split Leaf Leaf Vertical  0.5
-rightMostSplit (Split l r d ra) = Split l (rightMostSplit r) d ra-}
-
-
-data BSPMerge a = BSPMerge { leftMerge :: BSP -> a -> a
-                            , rightMerge :: BSP -> a -> a
-                            }
-                  
-data BSPAction a = BSPAction { emptyAction :: a
-                             , leafAction :: a
-                             , leftLeafAction :: BSP -> a
-                             , rightLeafAction :: BSP -> a
-                             }
-                   
-constMerge :: BSPMerge a                   
-constMerge = BSPMerge (\_ v -> v) (\_ v -> v)
-
-bubbleMerge :: BSPMerge BSP
-bubbleMerge = BSPMerge (\parent child -> case parent of
-                           (Split l r d ra) -> Split child r d ra
-                           _ -> error "Impossible")
-                       (\parent child -> case parent of
-                           (Split l r d ra) -> Split l child d ra
-                           _ -> error "Impossible")
-                           
-
-
-rightLeaf, leftLeaf :: BSP -> Int -> Bool
-rightLeaf = applyToNth (BSPAction False True (const False) (const True)) constMerge
-leftLeaf = applyToNth (BSPAction False True (const True) (const False)) constMerge
-
-splitNth :: BSP -> Int -> BSP
-splitNth = applyToNth (BSPAction Leaf 
-                                 (Split Leaf Leaf Vertical 0.5) 
-                                 (\x -> case x of
-                                     (Split Leaf r d ra) -> Split (Split Leaf Leaf (opposite d) 0.5) r d ra
-                                     _ -> error "Impossible")
-                                 (\x -> case x of 
-                                     (Split l Leaf d ra) -> Split l (Split Leaf Leaf (opposite d) 0.5) d ra
-                                     _ -> error "Impossible"))
-                      bubbleMerge
-
-removeNth :: BSP -> Int -> BSP
-removeNth = applyToNth (BSPAction EmptyBSP 
-                                  EmptyBSP
-                                  (\x -> case x of 
-                                      (Split Leaf r _ _) -> r
-                                      _ -> error "Impossible")
-                                  (\x -> case x of 
-                                      (Split l Leaf _ _) -> l
-                                      _ -> error "Impossible"))
-                       bubbleMerge
-
-rotateNth :: BSP -> Int -> BSP
-rotateNth = applyToNth (BSPAction EmptyBSP
-                                  Leaf
-                                  rotate
-                                  rotate)
-                       bubbleMerge
-                                  
-  where rotate = (\x -> case x of 
-                     (Split l r d ra) -> Split l r (opposite d) ra
-                     _ -> error "Impossible")
-                 
-swapNth :: BSP -> Int -> BSP                 
-swapNth = applyToNth (BSPAction EmptyBSP
-                                Leaf
-                                swap
-                                swap)
-                     bubbleMerge
-  where swap = (\x -> case x of
-                   (Split l r d ra) -> Split r l d ra
-                   _ -> error "Impossible")
-                 
-replaceNthWith_, replaceNthWith :: BSP -> BSP -> Int -> BSP
-replaceNthWith_ replacement = applyToNth (BSPAction replacement
-                                                    replacement
-                                                    (const replacement)
-                                                    (const replacement))
-                                         bubbleMerge
-replaceNthWith root replacement = replaceNthWith_ replacement root                                                    
-                 
+{-               
 rightGrowNth :: BSP -> Int -> BSP
 rightGrowNth = applyToNth (BSPAction EmptyBSP
                                      Leaf
