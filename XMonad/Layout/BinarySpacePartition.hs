@@ -119,6 +119,12 @@ splitCurrentLeaf (Leaf, []) = Just ((Node (Split Vertical 0.5) Leaf Leaf), [])
 splitCurrentLeaf (Leaf, crumb:cs) = Just ((Node (reverseDirection . parentSplit $ crumb) Leaf Leaf), crumb:cs)
 splitCurrentLeaf _ = Nothing
 
+removeCurrentLeaf :: BSPZipper -> Maybe BSPZipper
+removeCurrentLeaf (Leaf, []) = Nothing
+removeCurrentLeaf (Leaf, (LeftCrumb x r):cs) = Just (r, cs)
+removeCurrentLeaf (Leaf, (RightCrumb x l):cs) = Just (l, cs)
+removeCurrentLeaf _ = Nothing
+
 top :: BSPZipper -> BSPZipper
 top z = case (goUp z) of
           Nothing -> z
@@ -165,7 +171,16 @@ splitNth b@(BinarySpacePartition (Just node)) n = zipperToBSP zipper
                     zip' <- (goToNthLeaf n) zip
                     zip'' <- splitCurrentLeaf zip'
                     return $ top zip'' 
-                                                             
+                    
+removeNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a                    
+removeNth b@(BinarySpacePartition Nothing) _ = emptyBSP
+removeNth (BinarySpacePartition (Just Leaf)) _ = emptyBSP
+removeNth b@(BinarySpacePartition (Just node)) n = zipperToBSP zipper
+  where zipper = do zip <- makeZipper b
+                    zip' <- (goToNthLeaf n) zip
+                    zip'' <- removeCurrentLeaf zip'
+                    return $ top zip''
+
 instance LayoutClass BinarySpacePartition a where
   doLayout bsp r s = return (zip ws rs, layout) where
     ws = W.integrate s
