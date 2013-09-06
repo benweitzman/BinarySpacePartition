@@ -59,6 +59,9 @@ data Split = Split { direction :: Direction
                    , ratio :: Rational
                    } deriving (Show, Read)
 
+oppositeDirection :: Split -> Split
+oppositeDirection (Split d r) = Split (opposite d) r
+
 data Tree a = Leaf | Node { value :: a
                           , left :: Tree a
                           , right :: Tree a 
@@ -75,6 +78,10 @@ numLeaves (Node _ l r) = numLeaves l + numLeaves r
 type BSP = Tree Split
 
 data BSPCrumb = LeftCrumb Split BSP | RightCrumb Split BSP deriving (Show, Read)
+
+parentSplit :: BSPCrumb -> Split
+parentSplit (LeftCrumb s _) = s
+parentSplit (RightCrumb s _) = s
 
 type BSPZipper = (BSP, [BSPCrumb])
 
@@ -95,10 +102,36 @@ modify :: (Split -> Split) -> BSPZipper -> Maybe BSPZipper
 modify _ (Leaf, bs) = Just (Leaf, bs)
 modify f (Node x l r, bs) = Just (Node (f x) l r, bs)
 
+goToNthLeaf :: Int -> BSPZipper -> Maybe BSPZipper
+goToNthLeaf 0 z@(Leaf, _) = Just z 
+goToNthLeaf n z@(t, cs) = 
+  if (numLeaves . left $ t) > n 
+  then do z' <- goLeft z
+          goToNthLeaf n z'
+  else do z' <- goRight z
+          goToNthLeaf (n - (numLeaves .left $ t)) z'
+
+splitCurrent :: BSPZipper -> Maybe BSPZipper
+splitCurrent (Node _ _ _, _) = Nothing
+splitCurrent (Leaf, []) = Just (Node (Split Vertical 0.5)  Leaf Leaf, [])
+splitCurrent (Leaf, c:cs) = Just (Node (oppositeDirection . parentSplit $ c) Leaf Leaf, c:cs)
+
+removeCurrent :: BSPZipper -> Maybe BSPZipper
+removeCurrent (Node _ _ _, _) = Nothing
+removeCurrent (Leaf, []) = Nothing
+removeCurrent (Leaf, LeftCrumb s r:cs) = Just (r, cs)
+removeCurrent (Leaf, RightCrumb s l:cs) = Just (l, cs)
+
 top :: BSPZipper -> BSPZipper
 top z = case (goUp z) of
           Nothing -> z
-          Just (z') -> z'
+          Just (z') -> top z'
+
+zipperToBSP :: BSPZipper -> BSP
+zipperToBSP = fst . top
+
+bspToZipper :: BSP -> BSPZipper
+bspToZipper t = (t, [])
 
 index :: W.Stack a -> Int
 index s = case toIndex (Just s) of 
@@ -116,6 +149,10 @@ makeBSP = BinarySpacePartition . Just
 size :: BinarySpacePartition a -> Int
 size = fromMaybe 0 . fmap numLeaves . bsp
 
+zipperToBinarySpacePartition :: Maybe BSPZipper -> BinarySpacePartition a
+zipperToBinarySpacePartition Nothing = BinarySpacePartition Nothing
+zipperToBinarySpacePartition (Just z@(t, cs)) = BinarySpacePartition . Just . zipperToBSP .top $ z
+
 rectangles :: BinarySpacePartition a -> Rectangle -> [Rectangle]
 rectangles (BinarySpacePartition Nothing) _ = []
 rectangles (BinarySpacePartition (Just Leaf)) rootRect = [rootRect]
@@ -127,23 +164,38 @@ rectangles (BinarySpacePartition (Just node)) rootRect =
 
 splitNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a
 splitNth (BinarySpacePartition Nothing) _ = makeBSP Leaf
-splitNth (BinarySpacePartition (Just Leaf)) _ = makeBSP $ Node (Split Vertical 0.5)  Leaf Leaf
+splitNth (BinarySpacePartition (Just t)) n = zipperToBinarySpacePartition zipper
+    where zipper = do z <- Just . bspToZipper $ t
+                      z <- (goToNthLeaf n) z
+                      z <- splitCurrent z
+                      return z
 
-{-
+removeNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a
+removeNth (BinarySpacePartition Nothing) _ = emptyBSP
+removeNth (BinarySpacePartition (Just Leaf)) _ = emptyBSP
+removeNth (BinarySpacePartition (Just t)) n = zipperToBinarySpacePartition zipper
+    where zipper = do z <- Just . bspToZipper $ t
+                      z <- (goToNthLeaf n) z
+                      z <- removeCurrent z
+                      return z
+
 instance LayoutClass BinarySpacePartition a where
   doLayout bsp r s = return (zip ws rs, layout) where
     ws = W.integrate s
     count = size bsp
-    layout = if l == count then Just (cur)
-             else if l > count then Just (BinarySpacePartition (splitNth bsp n))
-                  else  Just (BinarySpacePartition (removeNth bsp n))
+    layout = if l == count 
+             then Just (bsp)
+             else if l > count  
+                  then Just (splitNth bsp n)
+                  else  Just (removeNth bsp n)
     l = length ws
     n = case toIndex (Just s) of
       (_, Nothing) -> 0
       (_, Just int) -> int
     rs = case layout of
       Nothing -> rectangles bsp r
-      (Just (BinarySpacePartition bsp')) -> rectangles bsp' r
+      Just bsp' -> rectangles bsp' r
+{-
   handleMessage (BinarySpacePartition bsp) m =
     do ms <- (W.stack . W.workspace . W.current) `fmap` gets windowset
        fs <- (M.keys . W.floating) `fmap` gets windowset
