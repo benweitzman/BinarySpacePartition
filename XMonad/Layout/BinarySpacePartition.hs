@@ -30,10 +30,19 @@ import Data.List ((\\))
 import Control.Monad
 import Data.Maybe
 
+class Negatable a where
+  opposite :: a -> a
+
 data Rotate = Rotate deriving Typeable
 instance Message Rotate
 
 data Bound = East | West | North | South deriving Typeable
+
+instance Negatable Bound where
+  opposite East = West
+  opposite West = East
+  opposite North = South
+  opposite South = North
 
 data ResizeDirectional = ExpandTowards Bound | ShrinkFrom Bound deriving Typeable
 instance Message ResizeDirectional
@@ -43,9 +52,9 @@ instance Message Swap
 
 data Direction = Horizontal | Vertical deriving (Show, Read, Eq)
 
-opposite :: Direction -> Direction
-opposite Vertical = Horizontal
-opposite Horizontal = Vertical
+instance Negatable Direction where
+  opposite Vertical = Horizontal
+  opposite Horizontal = Vertical
 
 split :: Direction -> Rational -> Rectangle -> (Rectangle, Rectangle)
 split Horizontal r (Rectangle sx sy sw sh) = (r1, r2) where 
@@ -71,10 +80,6 @@ data Tree a = Leaf | Node { value :: a
                           , left :: Tree a
                           , right :: Tree a 
                           } deriving (Show, Read, Eq)
-
-leaf :: Tree a -> Bool
-leaf Leaf = True
-leaf _ = False
 
 numLeaves :: Tree a -> Int
 numLeaves Leaf = 1
@@ -114,12 +119,10 @@ goUp (_, []) = Nothing
 goUp (t, LeftCrumb x r:cs) = Just (Node x t r, cs)
 goUp (t, RightCrumb x l:cs) = Just (Node x l t, cs)
 
-modifySplit :: (Split -> Split) -> BSPZipper -> Maybe BSPZipper
-modifySplit _ (Leaf, cs) = Just (Leaf, cs)
-modifySplit f (Node x l r, cs) = Just (Node (f x) l r, cs)
-
-modifyBSP :: (BSP -> BSP) -> BSPZipper -> Maybe BSPZipper
-modifyBSP f (t, cs) = Just (f t, cs)
+goSibling :: BSPZipper -> Maybe BSPZipper
+goSibling (_, []) = Nothing
+goSibling z@(_, LeftCrumb _ _:_) = Just z >>= goUp >>= goRight
+goSibling z@(_, RightCrumb _ _:_) = Just z >>= goUp >>= goLeft
 
 goToNthLeaf :: Int -> BSPZipper -> Maybe BSPZipper
 goToNthLeaf _ z@(Leaf, _) = Just z
@@ -132,7 +135,7 @@ goToNthLeaf n z@(t, _) =
           
 splitCurrentLeaf :: BSPZipper -> Maybe BSPZipper                  
 splitCurrentLeaf (Leaf, []) = Just ((Node (Split Vertical 0.5) Leaf Leaf), [])
-splitCurrentLeaf (Leaf, crumb:cs) = Just ((Node (oppositeDirection . parentSplit $ crumb) Leaf Leaf), crumb:cs)
+splitCurrentLeaf (Leaf, crumb:cs) = Just ((Node (Split (opposite . direction . parentSplit $ crumb) 0.5) Leaf Leaf), crumb:cs)
 splitCurrentLeaf _ = Nothing
 
 removeCurrentLeaf :: BSPZipper -> Maybe BSPZipper
@@ -153,12 +156,20 @@ swapCurrentLeaf _ = Nothing
 
 expandTreeTowards :: Bound -> BSPZipper -> Maybe BSPZipper
 expandTreeTowards _ z@(_, []) = Just z
-expandTreeTowards East z@(t, LeftCrumb s r:cs) 
+expandTreeTowards East (t, LeftCrumb s r:cs) 
   | direction s == Vertical = Just (t, LeftCrumb (increaseRatio s 0.1) r:cs)
-  | otherwise  = do z' <- goUp z
-                    expandTreeTowards East z'
-expandTreeTowards East z = do z' <- goUp z                    
-                              expandTreeTowards East z'
+expandTreeTowards West (t, RightCrumb s l:cs)                              
+  | direction s == Vertical = Just (t, RightCrumb (increaseRatio s (-0.1)) l:cs)
+expandTreeTowards South (t, LeftCrumb s r:cs)                              
+  | direction s == Horizontal = Just (t, LeftCrumb (increaseRatio s 0.1) r:cs)
+expandTreeTowards North (t, RightCrumb s l:cs)                                 
+  | direction s == Horizontal = Just (t, RightCrumb (increaseRatio s (-0.1)) l:cs)
+expandTreeTowards dir z = do z' <- goUp z                                
+                             expandTreeTowards dir z'
+                             
+shrinkTreeFrom :: Bound -> BSPZipper -> Maybe BSPZipper                          
+shrinkTreeFrom _ z@(_, []) = Just z
+shrinkTreeFrom dir z = Just z >>= goSibling >>= (expandTreeTowards . opposite $ dir)
                               
 top :: BSPZipper -> BSPZipper
 top z = case (goUp z) of
@@ -201,53 +212,37 @@ rectangles (BinarySpacePartition (Just node)) rootRect =
     where (leftBox, rightBox) = split (direction info) (ratio info) rootRect
           info = value node
 
+doToNth :: (BSPZipper -> Maybe BSPZipper) -> BinarySpacePartition a -> Int -> BinarySpacePartition a
+doToNth f b n = zipperToBinarySpacePartition $ makeZipper b >>= goToNthLeaf n >>= f
+
 splitNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a
 splitNth (BinarySpacePartition Nothing) _ = makeBSP Leaf
-splitNth (BinarySpacePartition (Just t)) n = zipperToBinarySpacePartition zipper
-    where zipper = do z <- Just . bspToZipper $ t
-                      z' <- (goToNthLeaf n) z
-                      z'' <- splitCurrentLeaf z'
-                      return z''
+splitNth b n = doToNth splitCurrentLeaf b n 
 
 removeNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a                    
 removeNth (BinarySpacePartition Nothing) _ = emptyBSP
 removeNth (BinarySpacePartition (Just Leaf)) _ = emptyBSP
-removeNth b n = zipperToBinarySpacePartition zipper
-  where zipper = do z <- makeZipper b
-                    z' <- (goToNthLeaf n) z
-                    z'' <- removeCurrentLeaf z'
-                    return z''
+removeNth b n = doToNth removeCurrentLeaf b n 
                     
 rotateNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a                    
 rotateNth (BinarySpacePartition Nothing) _ = emptyBSP
 rotateNth b@(BinarySpacePartition (Just Leaf)) _ = b
-rotateNth b n = zipperToBinarySpacePartition zipper
-  where zipper = do z <- makeZipper b
-                    z' <- (goToNthLeaf n) z
-                    z'' <- rotateCurrentLeaf z'
-                    return z'' 
+rotateNth b n = doToNth rotateCurrentLeaf b n 
                                         
 swapNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a
 swapNth (BinarySpacePartition Nothing) _ = emptyBSP
 swapNth b@(BinarySpacePartition (Just Leaf)) _ = b
-swapNth b n = zipperToBinarySpacePartition zipper
-  where zipper = do z <- makeZipper b
-                    z' <- (goToNthLeaf n) z
-                    z'' <- goUp z'
-                    z''' <- modifyBSP (\t -> case t of 
-                                               Leaf -> Leaf
-                                               Node x l r -> Node x r l)
-                                      z''
-                    return z'''
+swapNth b n = doToNth swapCurrentLeaf b n 
                     
 growNthTowards :: Bound -> BinarySpacePartition a -> Int -> BinarySpacePartition a
 growNthTowards _ (BinarySpacePartition Nothing) _ = emptyBSP
 growNthTowards _ b@(BinarySpacePartition (Just Leaf)) _ = b
-growNthTowards dir b n = zipperToBinarySpacePartition zipper
-  where zipper = do z <- makeZipper b
-                    z' <- (goToNthLeaf n) z
-                    z'' <- expandTreeTowards dir z'
-                    return z''
+growNthTowards dir b n = doToNth (expandTreeTowards dir) b n 
+                    
+shrinkNthFrom :: Bound -> BinarySpacePartition a -> Int -> BinarySpacePartition a                    
+shrinkNthFrom _ (BinarySpacePartition Nothing) _ = emptyBSP
+shrinkNthFrom _ b@(BinarySpacePartition (Just Leaf)) _ = b
+shrinkNthFrom dir b n = doToNth (shrinkTreeFrom dir) b n 
 
 instance LayoutClass BinarySpacePartition a where
   doLayout b r s = return (zip ws rs, layout) where
@@ -277,18 +272,7 @@ instance LayoutClass BinarySpacePartition a where
                                       , W.down = (W.down s) \\ fs })
           rotate Rotate s = rotateNth b $ index s
           swap Swap s = swapNth b $ index s
-          resize (ExpandTowards East) s = growNthTowards East b $ index s
-  --description _  = "BSP"
-
-
-{-               
-rightGrowNth :: BSP -> Int -> BSP
-rightGrowNth = applyToNth (BSPAction EmptyBSP
-                                     Leaf
-                                     (\x -> case x of 
-                                         (Split Leaf r Vertical ra) -> Split Leaf r Vertical $ min 0.9 (ra + 0.1)
-                                         (Split Leaf r Horizontal ra) -> error "Not implemented"
-                                         _ -> error "Impossible")
-                                     (\x -> error "Not implemented"))
-                          bubbleMerge -}
+          resize (ExpandTowards dir) s = growNthTowards dir b $ index s
+          resize (ShrinkFrom dir) s = shrinkNthFrom dir b $ index s
+  description _  = "BSP"
 
