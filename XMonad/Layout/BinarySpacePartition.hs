@@ -9,7 +9,7 @@
 -- Stability   :  unstable
 -- Portability :  unportable
 --
--- Layout where new windows will split the focused window in half.
+-- Layout where new windows will split the focused window in half, based off of BSPWM
 --
 -----------------------------------------------------------------------------
  
