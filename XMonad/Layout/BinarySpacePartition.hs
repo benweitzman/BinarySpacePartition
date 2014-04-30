@@ -22,9 +22,8 @@ module XMonad.Layout.BinarySpacePartition (BinarySpacePartition(..)
                                           ) where
 
 import XMonad
-import XMonad.Core
 import qualified XMonad.StackSet as W
-import XMonad.Util.Stack
+import XMonad.Util.Stack hiding (Zipper)
 import qualified Data.Map as M
 import Data.List ((\\))
 import Control.Monad
@@ -87,44 +86,44 @@ numLeaves (Node _ l r) = numLeaves l + numLeaves r
 
 type BSP = Tree Split
 
-data BSPCrumb = LeftCrumb Split BSP | RightCrumb Split BSP deriving (Show, Read, Eq)
+data Crumb a = LeftCrumb a (Tree a) | RightCrumb a (Tree a) deriving (Show, Read, Eq)
 
-swapCrumb :: BSPCrumb -> BSPCrumb 
+swapCrumb :: Crumb a -> Crumb a
 swapCrumb (LeftCrumb s t) = RightCrumb s t
 swapCrumb (RightCrumb s t) = LeftCrumb s t
 
-parentSplit :: BSPCrumb -> Split
-parentSplit (LeftCrumb s _) = s
-parentSplit (RightCrumb s _) = s
+parentVal :: Crumb a -> a
+parentVal (LeftCrumb s _) = s
+parentVal (RightCrumb s _) = s
 
-modifyParentSplit :: (Split -> Split) -> BSPCrumb -> BSPCrumb
-modifyParentSplit f (LeftCrumb s t) = LeftCrumb (f s) t
-modifyParentSplit f (RightCrumb s t) = RightCrumb (f s) t
+modifyParentVal :: (a -> a) -> Crumb a -> Crumb a
+modifyParentVal f (LeftCrumb s t) = LeftCrumb (f s) t
+modifyParentVal f (RightCrumb s t) = RightCrumb (f s) t
 
-type BSPZipper = (BSP, [BSPCrumb])
+type Zipper a = (Tree a, [Crumb a])
 
-bspToZipper :: BSP -> BSPZipper
-bspToZipper t = (t, [])
+toZipper :: Tree a -> Zipper a
+toZipper t = (t, [])
 
-goLeft :: BSPZipper -> Maybe BSPZipper
+goLeft :: Zipper a -> Maybe (Zipper a)
 goLeft (Leaf, _) = Nothing
 goLeft (Node x l r, bs) = Just (l, LeftCrumb x r:bs)
 
-goRight :: BSPZipper -> Maybe BSPZipper
+goRight :: Zipper a -> Maybe (Zipper a)
 goRight (Leaf, _) = Nothing
 goRight (Node x l r, bs) = Just (r, RightCrumb x l:bs)
 
-goUp :: BSPZipper -> Maybe BSPZipper
+goUp :: Zipper a -> Maybe (Zipper a)
 goUp (_, []) = Nothing
 goUp (t, LeftCrumb x r:cs) = Just (Node x t r, cs)
 goUp (t, RightCrumb x l:cs) = Just (Node x l t, cs)
 
-goSibling :: BSPZipper -> Maybe BSPZipper
+goSibling :: Zipper a -> Maybe (Zipper a)
 goSibling (_, []) = Nothing
 goSibling z@(_, LeftCrumb _ _:_) = Just z >>= goUp >>= goRight
 goSibling z@(_, RightCrumb _ _:_) = Just z >>= goUp >>= goLeft
 
-goToNthLeaf :: Int -> BSPZipper -> Maybe BSPZipper
+goToNthLeaf :: Int -> Zipper a -> Maybe (Zipper a)
 goToNthLeaf _ z@(Leaf, _) = Just z
 goToNthLeaf n z@(t, _) = 
   if numLeaves (left t) > n
@@ -133,28 +132,28 @@ goToNthLeaf n z@(t, _) =
   else do z' <- goRight z
           goToNthLeaf (n - (numLeaves . left $ t)) z'
           
-splitCurrentLeaf :: BSPZipper -> Maybe BSPZipper                  
+splitCurrentLeaf :: Zipper Split -> Maybe (Zipper Split)                  
 splitCurrentLeaf (Leaf, []) = Just ((Node (Split Vertical 0.5) Leaf Leaf), [])
-splitCurrentLeaf (Leaf, crumb:cs) = Just ((Node (Split (opposite . direction . parentSplit $ crumb) 0.5) Leaf Leaf), crumb:cs)
+splitCurrentLeaf (Leaf, crumb:cs) = Just ((Node (Split (opposite . direction . parentVal $ crumb) 0.5) Leaf Leaf), crumb:cs)
 splitCurrentLeaf _ = Nothing
 
-removeCurrentLeaf :: BSPZipper -> Maybe BSPZipper
+removeCurrentLeaf :: Zipper a -> Maybe (Zipper a)
 removeCurrentLeaf (Leaf, []) = Nothing
 removeCurrentLeaf (Leaf, (LeftCrumb _ r):cs) = Just (r, cs)
 removeCurrentLeaf (Leaf, (RightCrumb _ l):cs) = Just (l, cs)
 removeCurrentLeaf _ = Nothing
 
-rotateCurrentLeaf :: BSPZipper -> Maybe BSPZipper
+rotateCurrentLeaf :: Zipper Split -> Maybe (Zipper Split)
 rotateCurrentLeaf (Leaf, []) = Just (Leaf, [])
-rotateCurrentLeaf (Leaf, c:cs) = Just (Leaf, modifyParentSplit oppositeDirection c:cs)
+rotateCurrentLeaf (Leaf, c:cs) = Just (Leaf, modifyParentVal oppositeDirection c:cs)
 rotateCurrentLeaf _ = Nothing
 
-swapCurrentLeaf :: BSPZipper -> Maybe BSPZipper
+swapCurrentLeaf :: Zipper a -> Maybe (Zipper a)
 swapCurrentLeaf (Leaf, []) = Just (Leaf, [])
 swapCurrentLeaf (Leaf, c:cs) = Just (Leaf, swapCrumb c:cs) 
 swapCurrentLeaf _ = Nothing
 
-expandTreeTowards :: Bound -> BSPZipper -> Maybe BSPZipper
+expandTreeTowards :: Bound -> Zipper Split -> Maybe (Zipper Split)
 expandTreeTowards _ z@(_, []) = Just z
 expandTreeTowards East (t, LeftCrumb s r:cs) 
   | direction s == Vertical = Just (t, LeftCrumb (increaseRatio s 0.1) r:cs)
@@ -167,41 +166,41 @@ expandTreeTowards North (t, RightCrumb s l:cs)
 expandTreeTowards dir z = do z' <- goUp z                                
                              expandTreeTowards dir z'
                              
-shrinkTreeFrom :: Bound -> BSPZipper -> Maybe BSPZipper                          
+shrinkTreeFrom :: Bound -> Zipper Split -> Maybe (Zipper Split)                          
 shrinkTreeFrom _ z@(_, []) = Just z
 shrinkTreeFrom dir z = Just z >>= goSibling >>= (expandTreeTowards . opposite $ dir)
                               
-top :: BSPZipper -> BSPZipper
+top :: Zipper a -> Zipper a
 top z = case (goUp z) of
           Nothing -> z
           Just (z') -> top z'
 
-zipperToBSP :: BSPZipper -> BSP
-zipperToBSP = fst . top
+toTree :: Zipper a -> Tree a
+toTree = fst . top
 
 index :: W.Stack a -> Int
 index s = case toIndex (Just s) of 
             (_, Nothing) -> 0
             (_, Just int) -> int
                        
-data BinarySpacePartition a = BinarySpacePartition { bsp :: Maybe BSP } deriving (Show, Read)
+data BinarySpacePartition a = BinarySpacePartition { getTree :: Maybe (Tree Split) } deriving (Show, Read)
 
 emptyBSP :: BinarySpacePartition a
 emptyBSP = BinarySpacePartition Nothing
 
-makeBSP :: BSP -> BinarySpacePartition a
+makeBSP :: Tree Split -> BinarySpacePartition a
 makeBSP = BinarySpacePartition . Just
 
-makeZipper :: BinarySpacePartition a -> Maybe BSPZipper
+makeZipper :: BinarySpacePartition a -> Maybe (Zipper Split)
 makeZipper (BinarySpacePartition Nothing) = Nothing
-makeZipper (BinarySpacePartition (Just t)) = Just . bspToZipper $ t
+makeZipper (BinarySpacePartition (Just t)) = Just . toZipper $ t
 
 size :: BinarySpacePartition a -> Int
-size = fromMaybe 0 . fmap numLeaves . bsp
+size = fromMaybe 0 . fmap numLeaves . getTree
 
-zipperToBinarySpacePartition :: Maybe BSPZipper -> BinarySpacePartition a
+zipperToBinarySpacePartition :: Maybe (Zipper Split) -> BinarySpacePartition b
 zipperToBinarySpacePartition Nothing = BinarySpacePartition Nothing
-zipperToBinarySpacePartition (Just z) = BinarySpacePartition . Just . zipperToBSP . top $ z
+zipperToBinarySpacePartition (Just z) = BinarySpacePartition . Just . toTree . top $ z
 
 rectangles :: BinarySpacePartition a -> Rectangle -> [Rectangle]
 rectangles (BinarySpacePartition Nothing) _ = []
@@ -212,7 +211,7 @@ rectangles (BinarySpacePartition (Just node)) rootRect =
     where (leftBox, rightBox) = split (direction info) (ratio info) rootRect
           info = value node
 
-doToNth :: (BSPZipper -> Maybe BSPZipper) -> BinarySpacePartition a -> Int -> BinarySpacePartition a
+doToNth :: (Zipper Split -> Maybe (Zipper Split)) -> BinarySpacePartition a -> Int -> BinarySpacePartition a
 doToNth f b n = zipperToBinarySpacePartition $ makeZipper b >>= goToNthLeaf n >>= f
 
 splitNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a
