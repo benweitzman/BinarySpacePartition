@@ -59,7 +59,7 @@ data Rotate = Rotate deriving Typeable
 instance Message Rotate
 
 -- |Message for resizing one of the cells in the BSP
-data ResizeDirectional = ExpandTowards Bound | ShrinkFrom Bound deriving Typeable
+data ResizeDirectional = ExpandTowards Bound | ShrinkFrom Bound | MoveSplit Bound deriving Typeable
 instance Message ResizeDirectional
 
 -- |Message for swapping the left child of a split with the right child of split.
@@ -71,6 +71,12 @@ instance Message Swap
 data Bound = East | West | North | South deriving Typeable
 
 data Direction = Horizontal | Vertical deriving (Show, Read, Eq)
+
+toDirection :: Bound -> Direction
+toDirection North = Horizontal 
+toDirection South = Horizontal
+toDirection East  = Vertical
+toDirection West  = Vertical
 
 oppositeDirection :: Direction -> Direction
 oppositeDirection Vertical = Horizontal
@@ -175,13 +181,13 @@ swapCurrentLeaf _ = Nothing
 expandTreeTowards :: Bound -> Zipper Split -> Maybe (Zipper Split)
 expandTreeTowards _ z@(_, []) = Just z
 expandTreeTowards East (t, LeftCrumb s r:cs) 
-  | direction s == Vertical = Just (t, LeftCrumb (increaseRatio s 0.1) r:cs)
+  | direction s == Vertical = Just (t, LeftCrumb (increaseRatio s 0.05) r:cs)
 expandTreeTowards West (t, RightCrumb s l:cs)                              
-  | direction s == Vertical = Just (t, RightCrumb (increaseRatio s (-0.1)) l:cs)
+  | direction s == Vertical = Just (t, RightCrumb (increaseRatio s (-0.05)) l:cs)
 expandTreeTowards South (t, LeftCrumb s r:cs)                              
-  | direction s == Horizontal = Just (t, LeftCrumb (increaseRatio s 0.1) r:cs)
+  | direction s == Horizontal = Just (t, LeftCrumb (increaseRatio s 0.05) r:cs)
 expandTreeTowards North (t, RightCrumb s l:cs)                                 
-  | direction s == Horizontal = Just (t, RightCrumb (increaseRatio s (-0.1)) l:cs)
+  | direction s == Horizontal = Just (t, RightCrumb (increaseRatio s (-0.05)) l:cs)
 expandTreeTowards dir z = goUp z >>= expandTreeTowards dir
                               
 shrinkTreeFrom :: Bound -> Zipper Split -> Maybe (Zipper Split)                          
@@ -195,7 +201,65 @@ shrinkTreeFrom South z@(_, LeftCrumb s _:_)
 shrinkTreeFrom North z@(_, RightCrumb s _:_)                                 
   | direction s == Horizontal = Just z >>= goSibling >>= expandTreeTowards South
 shrinkTreeFrom dir z = goUp z >>= shrinkTreeFrom dir
-                       
+     
+-- Bound refers to which direction the divider should move.
+autoSizeTree :: Bound -> Zipper Split -> Maybe (Zipper Split)                          
+autoSizeTree _ z@(_, []) = Just z
+autoSizeTree d z =
+    Just z >>= getSplit (toDirection d) >>= resizeTree d
+
+-- resizing once found the correct split. YOU MUST FIND THE RIGHT SPLIT FIRST.
+resizeTree :: Bound -> Zipper Split -> Maybe (Zipper Split)
+resizeTree _ z@(_, []) = Just z
+resizeTree East z@(_, LeftCrumb _ _:_) =  
+  Just z >>= expandTreeTowards East
+resizeTree West z@(_, LeftCrumb _ _:_) = 
+  Just z >>= shrinkTreeFrom    East
+resizeTree North z@(_, LeftCrumb _ _:_) = 
+  Just z >>= shrinkTreeFrom    South
+resizeTree South z@(_, LeftCrumb _ _:_) = 
+  Just z >>= expandTreeTowards South
+resizeTree East z@(_, RightCrumb _ _:_) = 
+  Just z >>= shrinkTreeFrom    West
+resizeTree West z@(_, RightCrumb _ _:_) = 
+  Just z >>= expandTreeTowards West
+resizeTree North z@(_, RightCrumb _ _:_) = 
+  Just z >>= expandTreeTowards North
+resizeTree South z@(_, RightCrumb _ _:_) = 
+  Just z >>= shrinkTreeFrom    North
+
+
+getSplit :: Direction -> Zipper Split -> Maybe (Zipper Split)
+getSplit _ (_, []) = Nothing
+getSplit d z =
+ do let fs = findSplit d z
+    if fs == Nothing 
+    then findClosest d z
+    else fs
+
+findClosest :: Direction -> Zipper Split -> Maybe (Zipper Split)
+findClosest _ z@(_, []) = Just z
+findClosest d z@(_, LeftCrumb s _:_)
+  | direction s == d = Just z
+findClosest d z@(_, RightCrumb s _:_)
+  | direction s == d = Just z
+findClosest d z = goUp z >>= findClosest d 
+
+findSplit :: Direction -> Zipper Split -> Maybe (Zipper Split)
+findSplit _ (_, []) = Nothing
+findSplit d z@(_, LeftCrumb s _:_)
+  | direction s == d = Just z
+findSplit d z = goUp z >>= findSplit d 
+
+
+
+
+-- should find the last thing of a certain type...
+goUpM :: Zipper a -> Maybe (Zipper a)
+goUpM z@(_, []) = Just z
+goUpM z@(t, LeftCrumb x l:cs) = Just z
+goUpM z@(t, RightCrumb x r:cs) = Just (Node x t r, cs)
+
 top :: Zipper a -> Zipper a
 top z = case goUp z of
           Nothing -> z
@@ -270,6 +334,11 @@ shrinkNthFrom _ (BinarySpacePartition Nothing) _ = emptyBSP
 shrinkNthFrom _ b@(BinarySpacePartition (Just Leaf)) _ = b
 shrinkNthFrom dir b n = doToNth (shrinkTreeFrom dir) b n 
 
+autoSizeNth :: Bound -> BinarySpacePartition a -> Int -> BinarySpacePartition a                    
+autoSizeNth _ (BinarySpacePartition Nothing) _ = emptyBSP
+autoSizeNth _ b@(BinarySpacePartition (Just Leaf)) _ = b
+autoSizeNth dir b n = doToNth (autoSizeTree dir) b n 
+
 instance LayoutClass BinarySpacePartition a where
   doLayout b r s = return (zip ws rs, layout b) where
     ws = W.integrate s
@@ -300,5 +369,7 @@ instance LayoutClass BinarySpacePartition a where
           swap Swap s = swapNth b $ index s
           resize (ExpandTowards dir) s = growNthTowards dir b $ index s
           resize (ShrinkFrom dir) s = shrinkNthFrom dir b $ index s
+          resize (MoveSplit dir) s = autoSizeNth dir b $ index s
+
   description _  = "BSP"
 
