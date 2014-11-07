@@ -53,6 +53,20 @@ import Control.Monad
 -- > , ((modm,                           xK_r     ), sendMessage Rotate)
 -- > , ((modm,                           xK_s     ), sendMessage Swap)
 --
+-- Here's an alternative key mapping, this time using additionalKeysP,
+-- arrow keys, and slightly different behavior when resizing windows
+--
+-- > , ("M-M1-<Left>",    sendMessage $ ExpandTowards L)
+-- > , ("M-M1-<Right>",   sendMessage $ ShrinkFrom L)
+-- > , ("M-M1-<Up>",      sendMessage $ ExpandTowards U)
+-- > , ("M-M1-<Down>",    sendMessage $ ShrinkFrom U)
+-- > , ("M-M1-C-<Left>",  sendMessage $ ShrinkFrom R)
+-- > , ("M-M1-C-<Right>", sendMessage $ ExpandTowards R)
+-- > , ("M-M1-C-<Up>",    sendMessage $ ShrinkFrom D)
+-- > , ("M-M1-C-<Down>",  sendMessage $ ExpandTowards D)
+-- > , ("M-s",            sendMessage $ BSP.Swap)
+-- > , ("M-M1-s",         sendMessage $ Rotate) ]
+--
 
 -- |Message for rotating a split in the BSP. Keep in mind that this does not change the order
 -- of the windows, it will just turn a horizontal split into a verticial one and vice versa
