@@ -185,7 +185,7 @@ isAllTheWay L (_, RightCrumb s _:_)
   | axis s == Vertical = False
 isAllTheWay D (_, LeftCrumb s _:_)
   | axis s == Horizontal = False
-isAllTheWay U (_, LeftCrumb s _:_)
+isAllTheWay U (_, RightCrumb s _:_)
   | axis s == Horizontal = False
 isAllTheWay dir z = maybe False id $ goUp z >>= Just . isAllTheWay dir
 
