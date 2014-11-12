@@ -72,3 +72,4 @@ And to use the alternate resizing mode:
 ```
 , ((myModKey .|. controlMask, xK_Left   ), sendMessage $ MoveSplit L)
 ```
+![gif demo](http://i.imgur.com/6VpHKAU.gif)
