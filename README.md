@@ -1,7 +1,7 @@
 BinarySpacePartition
 ====================
 
-#### NOTICE: This layout is in the XMonadContrib darcs (though not the latest version as of 11/12/14)
+#### NOTICE: This layout is in the XMonadContrib darcs
 So unless you are making changes or need the latest version I suggest using that. Feel free to make changes
 here and or directly to xmonad contrib through darcs, I will pull down any upstream changes periodically. 
 
