@@ -20,6 +20,7 @@ module XMonad.Layout.BinarySpacePartition (
                                           , Rotate(..)
                                           , Swap(..)
                                           , ResizeDirectional(..)
+                                          , TreeFlip(..), TreeRotate(..), BalanceToggle(..)
                                           , Direction2D(..)
                                           ) where
 
@@ -28,7 +29,8 @@ import qualified XMonad.StackSet as W
 import XMonad.Util.Stack hiding (Zipper)
 import XMonad.Util.Types
 import qualified Data.Map as M
-import Data.List ((\\))
+import Data.List ((\\),elemIndex)
+import Data.Maybe (fromMaybe, fromJust, isNothing, mapMaybe)
 import Control.Monad
 
 -- $usage
@@ -67,6 +69,18 @@ import Control.Monad
 -- > , ("M-s",            sendMessage $ BSP.Swap)
 -- > , ("M-M1-s",         sendMessage $ Rotate) ]
 --
+
+-- |Message for flipping the tree (recursively swap all horizontal or all vertical split subtrees)
+data TreeFlip = FlipH | FlipV deriving Typeable
+instance Message TreeFlip
+
+-- |Message for rotating the binary tree around the root to the left or right, changing the shape
+data TreeRotate = RotateL | RotateR deriving Typeable
+instance Message TreeRotate
+
+-- |Message to balance the tree (AVL)
+data BalanceToggle = ToggleBalance | ResetTree deriving Typeable
+instance Message BalanceToggle
 
 -- |Message for rotating a split in the BSP. Keep in mind that this does not change the order
 -- of the windows, it will just turn a horizontal split into a verticial one and vice versa
@@ -124,13 +138,13 @@ increaseRatio (Split d r) delta = Split d (min 0.9 (max 0.1 (r + delta)))
 resizeDiff :: Rational
 resizeDiff = 0.05
 
-data Tree a = Leaf | Node { value :: a
+data Tree a = Leaf Int | Node { value :: a
                           , left :: Tree a
                           , right :: Tree a
                           } deriving (Show, Read, Eq)
 
 numLeaves :: Tree a -> Int
-numLeaves Leaf = 1
+numLeaves (Leaf _) = 1
 numLeaves (Node _ l r) = numLeaves l + numLeaves r
 
 data Crumb a = LeftCrumb a (Tree a) | RightCrumb a (Tree a) deriving (Show, Read, Eq)
@@ -153,11 +167,11 @@ toZipper :: Tree a -> Zipper a
 toZipper t = (t, [])
 
 goLeft :: Zipper a -> Maybe (Zipper a)
-goLeft (Leaf, _) = Nothing
+goLeft (Leaf _, _) = Nothing
 goLeft (Node x l r, bs) = Just (l, LeftCrumb x r:bs)
 
 goRight :: Zipper a -> Maybe (Zipper a)
-goRight (Leaf, _) = Nothing
+goRight (Leaf _, _) = Nothing
 goRight (Node x l r, bs) = Just (r, RightCrumb x l:bs)
 
 goUp :: Zipper a -> Maybe (Zipper a)
@@ -171,7 +185,7 @@ goSibling z@(_, LeftCrumb _ _:_) = Just z >>= goUp >>= goRight
 goSibling z@(_, RightCrumb _ _:_) = Just z >>= goUp >>= goLeft
 
 goToNthLeaf :: Int -> Zipper a -> Maybe (Zipper a)
-goToNthLeaf _ z@(Leaf, _) = Just z
+goToNthLeaf _ z@(Leaf _, _) = Just z
 goToNthLeaf n z@(t, _) =
   if numLeaves (left t) > n
   then do z' <- goLeft z
@@ -180,24 +194,24 @@ goToNthLeaf n z@(t, _) =
           goToNthLeaf (n - (numLeaves . left $ t)) z'
 
 splitCurrentLeaf :: Zipper Split -> Maybe (Zipper Split)
-splitCurrentLeaf (Leaf, []) = Just (Node (Split Vertical 0.5) Leaf Leaf, [])
-splitCurrentLeaf (Leaf, crumb:cs) = Just (Node (Split (oppositeAxis . axis . parentVal $ crumb) 0.5) Leaf Leaf, crumb:cs)
+splitCurrentLeaf (Leaf _, []) = Just (Node (Split Vertical 0.5) (Leaf 0) (Leaf 0), [])
+splitCurrentLeaf (Leaf _, crumb:cs) = Just (Node (Split (oppositeAxis . axis . parentVal $ crumb) 0.5) (Leaf 0) (Leaf 0), crumb:cs)
 splitCurrentLeaf _ = Nothing
 
 removeCurrentLeaf :: Zipper a -> Maybe (Zipper a)
-removeCurrentLeaf (Leaf, []) = Nothing
-removeCurrentLeaf (Leaf, LeftCrumb _ r:cs) = Just (r, cs)
-removeCurrentLeaf (Leaf, RightCrumb _ l:cs) = Just (l, cs)
+removeCurrentLeaf (Leaf _, []) = Nothing
+removeCurrentLeaf (Leaf _, LeftCrumb _ r:cs) = Just (r, cs)
+removeCurrentLeaf (Leaf _, RightCrumb _ l:cs) = Just (l, cs)
 removeCurrentLeaf _ = Nothing
 
 rotateCurrentLeaf :: Zipper Split -> Maybe (Zipper Split)
-rotateCurrentLeaf (Leaf, []) = Just (Leaf, [])
-rotateCurrentLeaf (Leaf, c:cs) = Just (Leaf, modifyParentVal oppositeSplit c:cs)
+rotateCurrentLeaf (Leaf n, []) = Just (Leaf n, [])
+rotateCurrentLeaf (Leaf n, c:cs) = Just (Leaf n, modifyParentVal oppositeSplit c:cs)
 rotateCurrentLeaf _ = Nothing
 
 swapCurrentLeaf :: Zipper a -> Maybe (Zipper a)
-swapCurrentLeaf (Leaf, []) = Just (Leaf, [])
-swapCurrentLeaf (Leaf, c:cs) = Just (Leaf, swapCrumb c:cs)
+swapCurrentLeaf (Leaf n, []) = Just (Leaf n, [])
+swapCurrentLeaf (Leaf n, c:cs) = Just (Leaf n, swapCrumb c:cs)
 swapCurrentLeaf _ = Nothing
 
 isAllTheWay :: Direction2D -> Zipper Split -> Bool
@@ -210,11 +224,11 @@ isAllTheWay D (_, LeftCrumb s _:_)
   | axis s == Horizontal = False
 isAllTheWay U (_, RightCrumb s _:_)
   | axis s == Horizontal = False
-isAllTheWay dir z = maybe False id $ goUp z >>= Just . isAllTheWay dir
+isAllTheWay dir z = fromMaybe False $ goUp z >>= Just . isAllTheWay dir
 
 expandTreeTowards :: Direction2D -> Zipper Split -> Maybe (Zipper Split)
 expandTreeTowards _ z@(_, []) = Just z
-expandTreeTowards dir z 
+expandTreeTowards dir z
   | isAllTheWay dir z = shrinkTreeFrom (oppositeDirection dir) z
 expandTreeTowards R (t, LeftCrumb s r:cs)
   | axis s == Vertical = Just (t, LeftCrumb (increaseRatio s resizeDiff) r:cs)
@@ -239,7 +253,7 @@ shrinkTreeFrom U z@(_, RightCrumb s _:_)
 shrinkTreeFrom dir z = goUp z >>= shrinkTreeFrom dir
 
 -- Direction2D refers to which direction the divider should move.
-autoSizeTree :: Direction2D -> Zipper Split -> Maybe (Zipper Split)                          
+autoSizeTree :: Direction2D -> Zipper Split -> Maybe (Zipper Split)
 autoSizeTree _ z@(_, []) = Just z
 autoSizeTree d z =
     Just z >>= getSplit (toAxis d) >>= resizeTree d
@@ -247,28 +261,28 @@ autoSizeTree d z =
 -- resizing once found the correct split. YOU MUST FIND THE RIGHT SPLIT FIRST.
 resizeTree :: Direction2D -> Zipper Split -> Maybe (Zipper Split)
 resizeTree _ z@(_, []) = Just z
-resizeTree R z@(_, LeftCrumb _ _:_) =  
+resizeTree R z@(_, LeftCrumb _ _:_) =
   Just z >>= expandTreeTowards R
-resizeTree L z@(_, LeftCrumb _ _:_) = 
+resizeTree L z@(_, LeftCrumb _ _:_) =
   Just z >>= shrinkTreeFrom    R
-resizeTree U z@(_, LeftCrumb _ _:_) = 
+resizeTree U z@(_, LeftCrumb _ _:_) =
   Just z >>= shrinkTreeFrom    D
-resizeTree D z@(_, LeftCrumb _ _:_) = 
+resizeTree D z@(_, LeftCrumb _ _:_) =
   Just z >>= expandTreeTowards D
-resizeTree R z@(_, RightCrumb _ _:_) = 
+resizeTree R z@(_, RightCrumb _ _:_) =
   Just z >>= shrinkTreeFrom    L
-resizeTree L z@(_, RightCrumb _ _:_) = 
+resizeTree L z@(_, RightCrumb _ _:_) =
   Just z >>= expandTreeTowards L
-resizeTree U z@(_, RightCrumb _ _:_) = 
+resizeTree U z@(_, RightCrumb _ _:_) =
   Just z >>= expandTreeTowards U
-resizeTree D z@(_, RightCrumb _ _:_) = 
+resizeTree D z@(_, RightCrumb _ _:_) =
   Just z >>= shrinkTreeFrom    U
 
 getSplit :: Axis -> Zipper Split -> Maybe (Zipper Split)
 getSplit _ (_, []) = Nothing
 getSplit d z =
  do let fs = findSplit d z
-    if fs == Nothing 
+    if isNothing fs
       then findClosest d z
       else fs
 
@@ -278,13 +292,13 @@ findClosest d z@(_, LeftCrumb s _:_)
   | axis s == d = Just z
 findClosest d z@(_, RightCrumb s _:_)
   | axis s == d = Just z
-findClosest d z = goUp z >>= findClosest d 
+findClosest d z = goUp z >>= findClosest d
 
 findSplit :: Axis -> Zipper Split -> Maybe (Zipper Split)
 findSplit _ (_, []) = Nothing
 findSplit d z@(_, LeftCrumb s _:_)
   | axis s == d = Just z
-findSplit d z = goUp z >>= findSplit d 
+findSplit d z = goUp z >>= findSplit d
 
 top :: Zipper a -> Zipper a
 top z = case goUp z of
@@ -299,30 +313,30 @@ index s = case toIndex (Just s) of
             (_, Nothing) -> 0
             (_, Just int) -> int
 
-data BinarySpacePartition a = BinarySpacePartition { getTree :: Maybe (Tree Split) } deriving (Show, Read)
+data BinarySpacePartition a = BinarySpacePartition { balanceToggle :: Bool, getTree :: Maybe (Tree Split) } deriving (Show, Read)
 
 -- | an empty BinarySpacePartition to use as a default for adding windows to.
 emptyBSP :: BinarySpacePartition a
-emptyBSP = BinarySpacePartition Nothing
+emptyBSP = BinarySpacePartition False Nothing
 
 makeBSP :: Tree Split -> BinarySpacePartition a
-makeBSP = BinarySpacePartition . Just
+makeBSP = BinarySpacePartition False . Just
 
 makeZipper :: BinarySpacePartition a -> Maybe (Zipper Split)
-makeZipper (BinarySpacePartition Nothing) = Nothing
-makeZipper (BinarySpacePartition (Just t)) = Just . toZipper $ t
+makeZipper (BinarySpacePartition _ Nothing) = Nothing
+makeZipper (BinarySpacePartition _ (Just t)) = Just . toZipper $ t
 
 size :: BinarySpacePartition a -> Int
 size = maybe 0 numLeaves . getTree
 
 zipperToBinarySpacePartition :: Maybe (Zipper Split) -> BinarySpacePartition b
-zipperToBinarySpacePartition Nothing = BinarySpacePartition Nothing
-zipperToBinarySpacePartition (Just z) = BinarySpacePartition . Just . toTree . top $ z
+zipperToBinarySpacePartition Nothing = emptyBSP
+zipperToBinarySpacePartition (Just z) = BinarySpacePartition False . Just . toTree . top $ z
 
 rectangles :: BinarySpacePartition a -> Rectangle -> [Rectangle]
-rectangles (BinarySpacePartition Nothing) _ = []
-rectangles (BinarySpacePartition (Just Leaf)) rootRect = [rootRect]
-rectangles (BinarySpacePartition (Just node)) rootRect =
+rectangles (BinarySpacePartition _ Nothing) _ = []
+rectangles (BinarySpacePartition _ (Just (Leaf _))) rootRect = [rootRect]
+rectangles (BinarySpacePartition _ (Just node)) rootRect =
     rectangles (makeBSP . left $ node) leftBox ++
     rectangles (makeBSP . right $ node) rightBox
     where (leftBox, rightBox) = split (axis info) (ratio info) rootRect
@@ -332,70 +346,165 @@ doToNth :: (Zipper Split -> Maybe (Zipper Split)) -> BinarySpacePartition a -> I
 doToNth f b n = zipperToBinarySpacePartition $ makeZipper b >>= goToNthLeaf n >>= f
 
 splitNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a
-splitNth (BinarySpacePartition Nothing) _ = makeBSP Leaf
+splitNth (BinarySpacePartition _ Nothing) _ = makeBSP (Leaf 0)
 splitNth b n = doToNth splitCurrentLeaf b n
 
 removeNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a
-removeNth (BinarySpacePartition Nothing) _ = emptyBSP
-removeNth (BinarySpacePartition (Just Leaf)) _ = emptyBSP
+removeNth (BinarySpacePartition _ Nothing) _ = emptyBSP
+removeNth (BinarySpacePartition _ (Just (Leaf _))) _ = emptyBSP
 removeNth b n = doToNth removeCurrentLeaf b n
 
 rotateNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a
-rotateNth (BinarySpacePartition Nothing) _ = emptyBSP
-rotateNth b@(BinarySpacePartition (Just Leaf)) _ = b
+rotateNth (BinarySpacePartition _ Nothing) _ = emptyBSP
+rotateNth b@(BinarySpacePartition _ (Just (Leaf _))) _ = b
 rotateNth b n = doToNth rotateCurrentLeaf b n
 
 swapNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a
-swapNth (BinarySpacePartition Nothing) _ = emptyBSP
-swapNth b@(BinarySpacePartition (Just Leaf)) _ = b
+swapNth (BinarySpacePartition _ Nothing) _ = emptyBSP
+swapNth b@(BinarySpacePartition _ (Just (Leaf _))) _ = b
 swapNth b n = doToNth swapCurrentLeaf b n
 
 growNthTowards :: Direction2D -> BinarySpacePartition a -> Int -> BinarySpacePartition a
-growNthTowards _ (BinarySpacePartition Nothing) _ = emptyBSP
-growNthTowards _ b@(BinarySpacePartition (Just Leaf)) _ = b
+growNthTowards _ (BinarySpacePartition _ Nothing) _ = emptyBSP
+growNthTowards _ b@(BinarySpacePartition _ (Just (Leaf _))) _ = b
 growNthTowards dir b n = doToNth (expandTreeTowards dir) b n
 
 shrinkNthFrom :: Direction2D -> BinarySpacePartition a -> Int -> BinarySpacePartition a
-shrinkNthFrom _ (BinarySpacePartition Nothing) _ = emptyBSP
-shrinkNthFrom _ b@(BinarySpacePartition (Just Leaf)) _ = b
+shrinkNthFrom _ (BinarySpacePartition _ Nothing) _ = emptyBSP
+shrinkNthFrom _ b@(BinarySpacePartition _ (Just (Leaf _))) _ = b
 shrinkNthFrom dir b n = doToNth (shrinkTreeFrom dir) b n
 
-autoSizeNth :: Direction2D -> BinarySpacePartition a -> Int -> BinarySpacePartition a                    
-autoSizeNth _ (BinarySpacePartition Nothing) _ = emptyBSP
-autoSizeNth _ b@(BinarySpacePartition (Just Leaf)) _ = b
-autoSizeNth dir b n = doToNth (autoSizeTree dir) b n 
+autoSizeNth :: Direction2D -> BinarySpacePartition a -> Int -> BinarySpacePartition a
+autoSizeNth _ (BinarySpacePartition _ Nothing) _ = emptyBSP
+autoSizeNth _ b@(BinarySpacePartition _ (Just (Leaf _))) _ = b
+autoSizeNth dir b n = doToNth (autoSizeTree dir) b n
 
-instance LayoutClass BinarySpacePartition a where
+-- swap all siblings along one axis
+flipTree :: Axis -> BinarySpacePartition a -> BinarySpacePartition a
+flipTree ax (BinarySpacePartition _ Nothing) = emptyBSP
+flipTree ax (BinarySpacePartition bal (Just t)) = BinarySpacePartition bal $ Just $ f ax t
+  where f ax (Leaf n) = Leaf n
+        f ax (Node sp l r)
+         | ax /= axis sp = Node sp (f ax r) (f ax l)
+         | otherwise    = Node sp (f ax l) (f ax r)
+
+-- rotate tree left or right around the root
+rotateTree :: Direction2D -> BinarySpacePartition a -> BinarySpacePartition a
+rotateTree U b = b
+rotateTree D b = b
+rotateTree _ (BinarySpacePartition _ Nothing) = emptyBSP
+rotateTree dir (BinarySpacePartition bal (Just t)) = BinarySpacePartition bal $ Just $ rot dir t
+
+-- right or left rotation of a (sub)tree
+rot dir (Leaf n) = (Leaf n)
+rot R n@(Node _ (Leaf _) _) = n
+rot L n@(Node _ _ (Leaf _)) = n
+rot R (Node sp (Node sp2 l2 r2) r) = Node sp2 l2 (Node sp r2 r)
+rot L (Node sp l (Node sp2 l2 r2)) = Node sp2 (Node sp l l2) r2
+
+-- tries to AVL-balance given tree (ignoring the balance flag here for reasons!)
+balanceTree :: BinarySpacePartition a -> BinarySpacePartition a
+balanceTree (BinarySpacePartition _ Nothing) = emptyBSP
+balanceTree (BinarySpacePartition bal (Just t)) = BinarySpacePartition bal $ Just $ balance t
+  where balance (Leaf n) = Leaf n
+        balance n@(Node s l r)
+         | heightDiff n == 2 && heightDiff l == -1 = balance $ Node s (rot L l) r
+         | heightDiff n == -2 && heightDiff l == 1 = balance $ Node s l (rot R r)
+         | heightDiff n == 2 && heightDiff l == 1 = rot R n
+         | heightDiff n == -2 && heightDiff l == -1 = rot L n
+         | otherwise = Node s (balance l) (balance r)
+         where height (Leaf _) = 0
+               height (Node _ l r) = 1 + max (height l) (height r)
+               heightDiff (Leaf _) = 0
+               heightDiff (Node _ l r) = height l - height r
+
+-- traverse and collect all leave numbers, left to right
+flattenLeaves :: BinarySpacePartition a -> [Int]
+flattenLeaves (BinarySpacePartition _ Nothing) = []
+flattenLeaves (BinarySpacePartition _ (Just t)) = flatten t
+ where flatten (Leaf n) = [n]
+       flatten (Node _ l r) = flatten l++flatten r
+
+-- we do this before an action to look which leaves moved where
+numerateLeaves :: BinarySpacePartition a -> BinarySpacePartition a
+numerateLeaves b@(BinarySpacePartition _ Nothing) = b
+numerateLeaves b@(BinarySpacePartition bal (Just t)) = BinarySpacePartition bal . Just . snd $ numerate 0 t
+  where numerate n (Leaf _) = (n+1, Leaf n)
+        numerate n (Node s l r) = (n'', Node s nl nr)
+          where (n', nl) = numerate n l
+                (n'', nr) = numerate n' r
+
+--move windows to new positions according to tree transformations, keeping focus on originally focused window
+adjustStack :: Maybe (W.Stack Window) -> Maybe (BinarySpacePartition Window) -> Maybe (W.Stack Window)
+adjustStack Nothing _ = Nothing
+adjustStack s Nothing = s
+adjustStack s (Just b) = if length ls>=length ws         -- if we have less leaves than windows,
+                         then fromIndex ws' fid' else s -- the tree is not complete yet! -> no changes yet
+ where ws' = mapMaybe ((flip M.lookup) wsmap) ls
+       fid' = fromMaybe 0 $ elemIndex focused ws'
+       wsmap = M.fromList $ zip [0..] ws
+       ls = flattenLeaves b
+       (ws,fid) = toIndex s
+       focused = ws !! (fromMaybe 0 $ fid)
+
+--replace the window stack of the managed workspace with our modified stack
+replaceStack :: Maybe (W.Stack Window) -> X ()
+replaceStack s = do
+  st <- get
+  let wset = windowset st
+      cur  = W.current wset
+      wsp  = W.workspace cur
+  put st{windowset=wset{W.current=cur{W.workspace=wsp{W.stack=s}}}}
+
+instance LayoutClass BinarySpacePartition Window where
   doLayout b r s = return (zip ws rs, layout b) where
     ws = W.integrate s
     layout bsp
-      | l == count = Just bsp
-      | l > count = layout $ splitNth bsp n
-      | otherwise = layout $ removeNth bsp n
+      | l == count = Just $ bsp{balanceToggle=balanceToggle b} --preserve balance flag
+      | l > count = layout $ bal $ splitNth bsp n
+      | otherwise = layout $ bal $ removeNth bsp n
       where count = size bsp
+            bal   = if balanceToggle b then balanceTree else id
 
     l = length ws
     n = index s
     rs = case layout b of
       Nothing -> rectangles b r
       Just bsp' -> rectangles bsp' r
-  handleMessage b m =
+
+  handleMessage b_orig m =
     do ms <- (W.stack . W.workspace . W.current) `fmap` gets windowset
        fs <- (M.keys . W.floating) `fmap` gets windowset
-       return $ ms >>= unfloat fs >>= handleMesg
+       -- TODO: understand and fix weird behaviour with floating windows
+       let b' = ms >>= unfloat fs >>= handleMesg
+       replaceStack $ adjustStack ms b'
+       return b'
     where handleMesg s = msum [fmap (`rotate` s) (fromMessage m)
                               ,fmap (`resize` s) (fromMessage m)
                               ,fmap (`swap` s) (fromMessage m)
+                              ,fmap (`flipTr` s) (fromMessage m)
+                              ,fmap (`rotateTr` s) (fromMessage m)
+                              ,fmap (`balanceTr` s) (fromMessage m)
                               ]
           unfloat fs s = if W.focus s `elem` fs
                          then Nothing
                          else Just (s { W.up = W.up s \\ fs
                                       , W.down = W.down s \\ fs })
+
+          b = numerateLeaves b_orig
+
           rotate Rotate s = rotateNth b $ index s
           swap Swap s = swapNth b $ index s
           resize (ExpandTowards dir) s = growNthTowards dir b $ index s
           resize (ShrinkFrom dir) s = shrinkNthFrom dir b $ index s
           resize (MoveSplit dir) s = autoSizeNth dir b $ index s
+
+          flipTr FlipH s = flipTree Horizontal b
+          flipTr FlipV s = flipTree Vertical b
+          rotateTr RotateL s = rotateTree L b
+          rotateTr RotateR s = rotateTree R b
+          balanceTr ToggleBalance s = b{balanceToggle=not $ balanceToggle b}
+          balanceTr ResetTree s = emptyBSP{balanceToggle=balanceToggle b}
 
   description _  = "BSP"
 
