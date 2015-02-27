@@ -20,7 +20,10 @@ module XMonad.Layout.BinarySpacePartition (
                                           , Rotate(..)
                                           , Swap(..)
                                           , ResizeDirectional(..)
-                                          , TreeFlip(..), TreeRotate(..), BalanceToggle(..)
+                                          , TreeRotate(..)
+                                          , TreeFlip(..)
+                                          , TreeBalance(..)
+                                          , Circulate(..)
                                           , Direction2D(..)
                                           ) where
 
@@ -70,20 +73,23 @@ import Control.Monad
 -- > , ("M-M1-s",         sendMessage $ Rotate) ]
 --
 
--- |Message for flipping the tree (recursively swap all horizontal or all vertical split subtrees)
+-- |Message for flipping the tree (horizontal/vertical mirroring)
 data TreeFlip = FlipH | FlipV deriving Typeable
 instance Message TreeFlip
 
--- |Message for rotating the binary tree around the root to the left or right, changing the shape
+-- |Message for rotating the binary tree around the parent node of the window to the left or right
 data TreeRotate = RotateL | RotateR deriving Typeable
 instance Message TreeRotate
 
--- |Message to balance the tree (AVL)
-data BalanceToggle = ToggleBalance | ResetTree deriving Typeable
-instance Message BalanceToggle
+-- |Message to balance the tree - the current splits are forgotten and the layout is rebuilt
+data TreeBalance = Balance deriving Typeable
+instance Message TreeBalance
 
--- |Message for rotating a split in the BSP. Keep in mind that this does not change the order
--- of the windows, it will just turn a horizontal split into a verticial one and vice versa
+-- |Message to circulate the windows
+data Circulate = CirculateL | CirculateR deriving Typeable
+instance Message Circulate
+
+-- |Message for rotating a split (horizontal/vertical) in the BSP
 data Rotate = Rotate deriving Typeable
 instance Message Rotate
 
@@ -91,9 +97,7 @@ instance Message Rotate
 data ResizeDirectional = ExpandTowards Direction2D | ShrinkFrom Direction2D | MoveSplit Direction2D deriving Typeable
 instance Message ResizeDirectional
 
--- |Message for swapping the left child of a split with the right child of split.
--- Keep in mind that it does not change the order of windows and will seem to have bizarre effects
--- if you are not expecting them.
+-- |Message for swapping the left child of a split with the right child of split
 data Swap = Swap deriving Typeable
 instance Message Swap
 
@@ -313,7 +317,8 @@ index s = case toIndex (Just s) of
             (_, Nothing) -> 0
             (_, Just int) -> int
 
-data BinarySpacePartition a = BinarySpacePartition { balanceToggle :: Bool, getTree :: Maybe (Tree Split) } deriving (Show, Read)
+data BinarySpacePartition a = BinarySpacePartition { balanceToggle :: Bool
+                                                   , getTree :: Maybe (Tree Split) } deriving (Show, Read)
 
 -- | an empty BinarySpacePartition to use as a default for adding windows to.
 emptyBSP :: BinarySpacePartition a
@@ -379,28 +384,31 @@ autoSizeNth _ (BinarySpacePartition _ Nothing) _ = emptyBSP
 autoSizeNth _ b@(BinarySpacePartition _ (Just (Leaf _))) _ = b
 autoSizeNth dir b n = doToNth (autoSizeTree dir) b n
 
--- swap all siblings along one axis
-flipTree :: Axis -> BinarySpacePartition a -> BinarySpacePartition a
-flipTree ax (BinarySpacePartition _ Nothing) = emptyBSP
-flipTree ax (BinarySpacePartition bal (Just t)) = BinarySpacePartition bal $ Just $ f ax t
-  where f ax (Leaf n) = Leaf n
-        f ax (Node sp l r)
-         | ax /= axis sp = Node sp (f ax r) (f ax l)
-         | otherwise    = Node sp (f ax l) (f ax r)
+-- rotate tree left or right around parent of nth leaf
+rotateTreeNth :: Direction2D -> BinarySpacePartition a -> Int -> BinarySpacePartition a
+rotateTreeNth _ (BinarySpacePartition _ Nothing) _ = emptyBSP
+rotateTreeNth U b _ = b
+rotateTreeNth D b _ = b
+rotateTreeNth dir b@(BinarySpacePartition _ (Just t)) n =
+  doToNth (\t -> case goUp t of
+                Nothing     -> Just t
+                Just (t, c) -> Just (rot dir t, c)) b n
 
--- rotate tree left or right around the root
-rotateTree :: Direction2D -> BinarySpacePartition a -> BinarySpacePartition a
-rotateTree U b = b
-rotateTree D b = b
-rotateTree _ (BinarySpacePartition _ Nothing) = emptyBSP
-rotateTree dir (BinarySpacePartition bal (Just t)) = BinarySpacePartition bal $ Just $ rot dir t
-
--- right or left rotation of a (sub)tree
+-- right or left rotation of a (sub)tree, so effect if rotation not possible
 rot dir (Leaf n) = (Leaf n)
 rot R n@(Node _ (Leaf _) _) = n
 rot L n@(Node _ _ (Leaf _)) = n
 rot R (Node sp (Node sp2 l2 r2) r) = Node sp2 l2 (Node sp r2 r)
 rot L (Node sp l (Node sp2 l2 r2)) = Node sp2 (Node sp l l2) r2
+
+-- swap all siblings along one axis, also invert ratio for symmetry -> "mirror" layout
+flipTree :: Axis -> BinarySpacePartition a -> BinarySpacePartition a
+flipTree ax (BinarySpacePartition _ Nothing) = emptyBSP
+flipTree ax (BinarySpacePartition bal (Just t)) = BinarySpacePartition bal $ Just $ f ax t
+  where f ax (Leaf n) = Leaf n
+        f ax (Node sp l r)
+         | ax /= axis sp = Node sp{ratio=1 - ratio sp} (f ax r) (f ax l)
+         | otherwise    = Node sp (f ax l) (f ax r)
 
 -- tries to AVL-balance given tree (ignoring the balance flag here for reasons!)
 balanceTree :: BinarySpacePartition a -> BinarySpacePartition a
@@ -418,6 +426,20 @@ balanceTree (BinarySpacePartition bal (Just t)) = BinarySpacePartition bal $ Jus
                heightDiff (Leaf _) = 0
                heightDiff (Node _ l r) = height l - height r
 
+-- attempt to rotate splits optimally in order choose more quad-like rects
+optimizeOrientation :: Rectangle -> BinarySpacePartition a -> BinarySpacePartition a
+optimizeOrientation r (BinarySpacePartition _ Nothing) = emptyBSP
+optimizeOrientation r (BinarySpacePartition bal (Just t)) = BinarySpacePartition bal $ Just $ opt t r
+  where opt (Leaf v) rect = (Leaf v)
+        opt (Node sp l r) rect = Node sp' (opt l lrect) (opt r rrect)
+         where (Rectangle _ _ w1 h1,Rectangle _ _ w2 h2) = split (axis sp) (ratio sp) rect
+               (Rectangle _ _ w3 h3,Rectangle _ _ w4 h4) = split (axis $ oppositeSplit sp) (ratio sp) rect
+               f w h = if w > h then w'/h' else h'/w' where (w',h') = (fromIntegral w, fromIntegral h)
+               wratio = min (f w1 h1) (f w2 h2)
+               wratio' = min (f w3 h3) (f w4 h4)
+               sp' = if wratio<wratio' then sp else oppositeSplit sp
+               (lrect, rrect) = split (axis sp') (ratio sp') rect
+
 -- traverse and collect all leave numbers, left to right
 flattenLeaves :: BinarySpacePartition a -> [Int]
 flattenLeaves (BinarySpacePartition _ Nothing) = []
@@ -425,7 +447,7 @@ flattenLeaves (BinarySpacePartition _ (Just t)) = flatten t
  where flatten (Leaf n) = [n]
        flatten (Node _ l r) = flatten l++flatten r
 
--- we do this before an action to look which leaves moved where
+-- we do this before an action to look afterwards which leaves moved where
 numerateLeaves :: BinarySpacePartition a -> BinarySpacePartition a
 numerateLeaves b@(BinarySpacePartition _ Nothing) = b
 numerateLeaves b@(BinarySpacePartition bal (Just t)) = BinarySpacePartition bal . Just . snd $ numerate 0 t
@@ -433,6 +455,13 @@ numerateLeaves b@(BinarySpacePartition bal (Just t)) = BinarySpacePartition bal 
         numerate n (Node s l r) = (n'', Node s nl nr)
           where (n', nl) = numerate n l
                 (n'', nr) = numerate n' r
+
+-- shift the numbers by an offset -> circulate windows
+circulateLeaves :: Int -> BinarySpacePartition a -> BinarySpacePartition a
+circulateLeaves _ b@(BinarySpacePartition _ Nothing) = b
+circulateLeaves n b@(BinarySpacePartition bal (Just t)) = BinarySpacePartition bal . Just $ circ t
+  where circ (Leaf m) = Leaf $ (m+n) `mod` size b
+        circ (Node s l r) = Node s (circ l) (circ r)
 
 --move windows to new positions according to tree transformations, keeping focus on originally focused window
 adjustStack :: Maybe (W.Stack Window) -> Maybe (BinarySpacePartition Window) -> Maybe (W.Stack Window)
@@ -442,8 +471,8 @@ adjustStack s (Just b) = if length ls>=length ws         -- if we have less leav
                          then fromIndex ws' fid' else s -- the tree is not complete yet! -> no changes yet
  where ws' = mapMaybe ((flip M.lookup) wsmap) ls
        fid' = fromMaybe 0 $ elemIndex focused ws'
-       wsmap = M.fromList $ zip [0..] ws
-       ls = flattenLeaves b
+       wsmap = M.fromList $ zip [0..] ws --map of old index in list -> window
+       ls = flattenLeaves b             --get new index ordering
        (ws,fid) = toIndex s
        focused = ws !! (fromMaybe 0 $ fid)
 
@@ -457,34 +486,34 @@ replaceStack s = do
   put st{windowset=wset{W.current=cur{W.workspace=wsp{W.stack=s}}}}
 
 instance LayoutClass BinarySpacePartition Window where
-  doLayout b r s = return (zip ws rs, layout b) where
+  doLayout b r s = return (zip ws rs, Just b') where
     ws = W.integrate s
     layout bsp
-      | l == count = Just $ bsp{balanceToggle=balanceToggle b} --preserve balance flag
+      | l == count = bsp{balanceToggle=False} --remove flag after tree is complete
       | l > count = layout $ bal $ splitNth bsp n
       | otherwise = layout $ bal $ removeNth bsp n
       where count = size bsp
-            bal   = if balanceToggle b then balanceTree else id
+            bal   = if balanceToggle b then optimizeOrientation r . balanceTree else id
 
     l = length ws
     n = index s
-    rs = case layout b of
-      Nothing -> rectangles b r
-      Just bsp' -> rectangles bsp' r
+    b' = layout b
+    rs =  rectangles b' r
 
   handleMessage b_orig m =
     do ms <- (W.stack . W.workspace . W.current) `fmap` gets windowset
        fs <- (M.keys . W.floating) `fmap` gets windowset
-       -- TODO: understand and fix weird behaviour with floating windows
+       -- TODO: understand and fix weird behaviour with floating windows (some operations don't work then)
        let b' = ms >>= unfloat fs >>= handleMesg
        replaceStack $ adjustStack ms b'
        return b'
     where handleMesg s = msum [fmap (`rotate` s) (fromMessage m)
                               ,fmap (`resize` s) (fromMessage m)
                               ,fmap (`swap` s) (fromMessage m)
-                              ,fmap (`flipTr` s) (fromMessage m)
                               ,fmap (`rotateTr` s) (fromMessage m)
-                              ,fmap (`balanceTr` s) (fromMessage m)
+                              ,fmap flipTr (fromMessage m)
+                              ,fmap balanceTr (fromMessage m)
+                              ,fmap circTr (fromMessage m)
                               ]
           unfloat fs s = if W.focus s `elem` fs
                          then Nothing
@@ -498,13 +527,14 @@ instance LayoutClass BinarySpacePartition Window where
           resize (ExpandTowards dir) s = growNthTowards dir b $ index s
           resize (ShrinkFrom dir) s = shrinkNthFrom dir b $ index s
           resize (MoveSplit dir) s = autoSizeNth dir b $ index s
+          rotateTr RotateL s = rotateTreeNth L b $ index s
+          rotateTr RotateR s = rotateTreeNth R b $ index s
 
-          flipTr FlipH s = flipTree Horizontal b
-          flipTr FlipV s = flipTree Vertical b
-          rotateTr RotateL s = rotateTree L b
-          rotateTr RotateR s = rotateTree R b
-          balanceTr ToggleBalance s = b{balanceToggle=not $ balanceToggle b}
-          balanceTr ResetTree s = emptyBSP{balanceToggle=balanceToggle b}
+          flipTr FlipH = flipTree Horizontal b
+          flipTr FlipV = flipTree Vertical b
+          circTr CirculateL = circulateLeaves 1 b
+          circTr CirculateR = circulateLeaves (-1) b
+          balanceTr Balance = emptyBSP{balanceToggle=True}
 
   description _  = "BSP"
 

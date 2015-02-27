@@ -72,4 +72,16 @@ And to use the alternate resizing mode:
 ```
 , ((myModKey .|. controlMask, xK_Left   ), sendMessage $ MoveSplit L)
 ```
+
+There are some more operations you might find useful:
+```
+, ((myModMask .|. mod1Mask,  xK_Up),    sendMessage $ FlipH)
+, ((myModMask .|. mod1Mask,  xK_Down),  sendMessage $ FlipV)
+, ((myModMask .|. mod1Mask,  xK_Right), sendMessage $ RotateR)
+, ((myModMask .|. mod1Mask,  xK_Left),  sendMessage $ RotateL)
+, ((myModMask, xK_a), sendMessage Balance)
+, ((myModMask, xK_f), sendMessage CirculateR)
+, ((myModMask, xK_g), sendMessage CirculateL)
+```
+
 ![gif demo](http://i.imgur.com/6VpHKAU.gif)
