@@ -35,6 +35,7 @@ import qualified Data.Map as M
 import Data.List ((\\),elemIndex)
 import Data.Maybe (fromMaybe, fromJust, isNothing, mapMaybe)
 import Control.Monad
+import Control.Applicative
 
 -- $usage
 -- You can use this module with the following in your @~\/.xmonad\/xmonad.hs@:
@@ -464,15 +465,21 @@ circulateLeaves n b@(BinarySpacePartition bal (Just t)) = BinarySpacePartition b
         circ (Node s l r) = Node s (circ l) (circ r)
 
 --move windows to new positions according to tree transformations, keeping focus on originally focused window
-adjustStack :: Maybe (W.Stack Window) -> Maybe (BinarySpacePartition Window) -> Maybe (W.Stack Window)
-adjustStack Nothing _ = Nothing
-adjustStack s Nothing = s
-adjustStack s (Just b) = if length ls>=length ws         -- if we have less leaves than windows,
-                         then fromIndex ws' fid' else s -- the tree is not complete yet! -> no changes yet
- where ws' = mapMaybe ((flip M.lookup) wsmap) ls
+--CAREFUL here! introduce a bug here and have fun debugging as your windows start to disappear or explode
+adjustStack :: Maybe (W.Stack Window)  --original stack
+            -> Maybe (W.Stack Window)  --stack without floating windows
+            -> [Window]                --just floating windows of this WS
+            -> Maybe (BinarySpacePartition Window) -- Tree with numbered leaves telling what to move where
+            -> Maybe (W.Stack Window)  --resulting stack
+adjustStack orig Nothing _ _ = orig   --no new stack -> no changes
+adjustStack orig _ _ Nothing = orig   --empty tree   -> no changes
+adjustStack orig s fw (Just b) =
+ if length ls<length ws then orig     --less leaves than non-floating windows -> tree incomplete, no changes
+ else fromIndex ws' fid'
+ where ws' = (mapMaybe ((flip M.lookup) wsmap) ls)++fw
        fid' = fromMaybe 0 $ elemIndex focused ws'
-       wsmap = M.fromList $ zip [0..] ws --map of old index in list -> window
-       ls = flattenLeaves b             --get new index ordering
+       wsmap = M.fromList $ zip [0..] ws -- map: old index in list -> window
+       ls = flattenLeaves b             -- get new index ordering from tree
        (ws,fid) = toIndex s
        focused = ws !! (fromMaybe 0 $ fid)
 
@@ -483,7 +490,9 @@ replaceStack s = do
   let wset = windowset st
       cur  = W.current wset
       wsp  = W.workspace cur
-  put st{windowset=wset{W.current=cur{W.workspace=wsp{W.stack=s}}}}
+  put st{windowset=wset{W.current=cur{W.workspace=wsp{W.stack=s}}}} --I heard lenses make this better...
+
+-- debug str = spawn $ "echo \""++str++"\" >> /tmp/xdebug"
 
 instance LayoutClass BinarySpacePartition Window where
   doLayout b r s = return (zip ws rs, Just b') where
@@ -501,20 +510,23 @@ instance LayoutClass BinarySpacePartition Window where
     rs =  rectangles b' r
 
   handleMessage b_orig m =
-    do ms <- (W.stack . W.workspace . W.current) `fmap` gets windowset
-       fs <- (M.keys . W.floating) `fmap` gets windowset
-       -- TODO: understand and fix weird behaviour with floating windows (some operations don't work then)
-       let b' = ms >>= unfloat fs >>= handleMesg
-       replaceStack $ adjustStack ms b'
+    do ws <- (W.stack . W.workspace . W.current) <$> gets windowset -- windows on this WS (with floating)
+       fs <- (M.keys . W.floating) <$> gets windowset               -- all floating windows
+       let lws = maybe Nothing (unfloat fs) ws                            -- tiled windows on WS
+           lfs = (maybe [] W.integrate ws) \\ (maybe [] W.integrate lws)  -- untiled windows on WS
+           b'  = lws >>= handleMesg         -- transform tree (concerns only tiled windows)
+           ws' = adjustStack ws lws lfs b' -- apply transformation to window stack, reintegrate floating
+       replaceStack ws'
        return b'
-    where handleMesg s = msum [fmap (`rotate` s) (fromMessage m)
-                              ,fmap (`resize` s) (fromMessage m)
-                              ,fmap (`swap` s) (fromMessage m)
+    where handleMesg s = msum [fmap (`rotate` s)   (fromMessage m)
+                              ,fmap (`resize` s)   (fromMessage m)
+                              ,fmap (`swap` s)     (fromMessage m)
                               ,fmap (`rotateTr` s) (fromMessage m)
-                              ,fmap flipTr (fromMessage m)
-                              ,fmap balanceTr (fromMessage m)
-                              ,fmap circTr (fromMessage m)
+                              ,fmap flipTr         (fromMessage m)
+                              ,fmap balanceTr      (fromMessage m)
+                              ,fmap circTr         (fromMessage m)
                               ]
+          -- ignore messages if current focus is on floating window
           unfloat fs s = if W.focus s `elem` fs
                          then Nothing
                          else Just (s { W.up = W.up s \\ fs
