@@ -2,7 +2,8 @@
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  XMonad.Layout.BinarySpacePartition
--- Copyright   :  (c) 2013 Ben Weitzman <benweitzman@gmail.com>
+-- Copyright   :  (c) 2013 Ben Weitzman    <benweitzman@gmail.com>
+--                    2015 Anton Pirogov   <anton.pirogov@gmail.com>
 -- License     :  BSD3-style (see LICENSE)
 --
 -- Maintainer  :  Ben Weitzman <benweitzman@gmail.com>
@@ -14,28 +15,33 @@
 -----------------------------------------------------------------------------
 
 module XMonad.Layout.BinarySpacePartition (
-                                          -- * Usage
-                                          -- $usage
-                                            emptyBSP
-                                          , Rotate(..)
-                                          , Swap(..)
-                                          , ResizeDirectional(..)
-                                          , TreeRotate(..)
-                                          , TreeFlip(..)
-                                          , TreeBalance(..)
-                                          , Circulate(..)
-                                          , Direction2D(..)
-                                          ) where
+  -- * Usage
+  -- $usage
+    emptyBSP
+  , Rotate(..)
+  , Swap(..)
+  , ResizeDirectional(..)
+  , TreeRotate(..)
+  , TreeFlip(..)
+  , TreeBalance(..)
+  , Circulate(..)
+  , Direction2D(..)
+  ) where
 
 import XMonad
 import qualified XMonad.StackSet as W
 import XMonad.Util.Stack hiding (Zipper)
 import XMonad.Util.Types
+
+-- for mouse resizing
+import XMonad.Layout.WindowArranger (WindowArrangerMsg(SetGeometry))
+
 import qualified Data.Map as M
-import Data.List ((\\),elemIndex)
-import Data.Maybe (fromMaybe, fromJust, isNothing, mapMaybe)
-import Control.Monad
+import Data.List ((\\), elemIndex, foldl')
+import Data.Maybe (fromMaybe, isNothing, mapMaybe, catMaybes)
 import Control.Applicative
+import Control.Monad
+import Data.Ratio ((%))
 
 -- $usage
 -- You can use this module with the following in your @~\/.xmonad\/xmonad.hs@:
@@ -45,6 +51,9 @@ import Control.Applicative
 -- Then add the layout, using the default BSP (BinarySpacePartition)
 --
 -- > myLayout = emptyBSP ||| etc ..
+--
+-- This layout responds to SetGeometry and is compatible with e.g. XMonad.Actions.MouseResize
+-- or XMonad.Layout.BorderResize. You should probably try both to decide which is better for you.
 --
 -- It will be helpful to add the following key bindings
 --
@@ -143,6 +152,7 @@ increaseRatio (Split d r) delta = Split d (min 0.9 (max 0.1 (r + delta)))
 resizeDiff :: Rational
 resizeDiff = 0.05
 
+
 data Tree a = Leaf Int | Node { value :: a
                           , left :: Tree a
                           , right :: Tree a
@@ -151,6 +161,14 @@ data Tree a = Leaf Int | Node { value :: a
 numLeaves :: Tree a -> Int
 numLeaves (Leaf _) = 1
 numLeaves (Node _ l r) = numLeaves l + numLeaves r
+
+-- right or left rotation of a (sub)tree, no effect if rotation not possible
+rot dir (Leaf n) = (Leaf n)
+rot R n@(Node _ (Leaf _) _) = n
+rot L n@(Node _ _ (Leaf _)) = n
+rot R (Node sp (Node sp2 l2 r2) r) = Node sp2 l2 (Node sp r2 r)
+rot L (Node sp l (Node sp2 l2 r2)) = Node sp2 (Node sp l l2) r2
+
 
 data Crumb a = LeftCrumb a (Tree a) | RightCrumb a (Tree a) deriving (Show, Read, Eq)
 
@@ -189,6 +207,14 @@ goSibling (_, []) = Nothing
 goSibling z@(_, LeftCrumb _ _:_) = Just z >>= goUp >>= goRight
 goSibling z@(_, RightCrumb _ _:_) = Just z >>= goUp >>= goLeft
 
+top :: Zipper a -> Zipper a
+top z = case goUp z of
+          Nothing -> z
+          Just z' -> top z'
+
+toTree :: Zipper a -> Tree a
+toTree = fst . top
+
 goToNthLeaf :: Int -> Zipper a -> Maybe (Zipper a)
 goToNthLeaf _ z@(Leaf _, _) = Just z
 goToNthLeaf n z@(t, _) =
@@ -210,12 +236,12 @@ removeCurrentLeaf (Leaf _, RightCrumb _ l:cs) = Just (l, cs)
 removeCurrentLeaf _ = Nothing
 
 rotateCurrentLeaf :: Zipper Split -> Maybe (Zipper Split)
-rotateCurrentLeaf (Leaf n, []) = Just (Leaf n, [])
+rotateCurrentLeaf l@(Leaf _, []) = Just l
 rotateCurrentLeaf (Leaf n, c:cs) = Just (Leaf n, modifyParentVal oppositeSplit c:cs)
 rotateCurrentLeaf _ = Nothing
 
 swapCurrentLeaf :: Zipper a -> Maybe (Zipper a)
-swapCurrentLeaf (Leaf n, []) = Just (Leaf n, [])
+swapCurrentLeaf l@(Leaf _, []) = Just l
 swapCurrentLeaf (Leaf n, c:cs) = Just (Leaf n, swapCrumb c:cs)
 swapCurrentLeaf _ = Nothing
 
@@ -305,44 +331,56 @@ findSplit d z@(_, LeftCrumb s _:_)
   | axis s == d = Just z
 findSplit d z = goUp z >>= findSplit d
 
-top :: Zipper a -> Zipper a
-top z = case goUp z of
-          Nothing -> z
-          Just z' -> top z'
+resizeSplit :: Direction2D -> (Rational,Rational) -> Zipper Split -> Maybe (Zipper Split)
+resizeSplit _ _ z@(_, []) = Just z
+resizeSplit dir (xsc,ysc) z = case goToBorder dir z of
+  Nothing -> Just z
+  Just (t, crumb) -> Just $ case dir of
+    R -> (t{value=sp{ratio=scaleRatio (ratio sp) xsc}}, crumb)
+    D -> (t{value=sp{ratio=scaleRatio (ratio sp) ysc}}, crumb)
+    L -> (t{value=sp{ratio=1-scaleRatio (1-ratio sp) xsc}}, crumb)
+    U -> (t{value=sp{ratio=1-scaleRatio (1-ratio sp) ysc}}, crumb)
+    where sp = value t
+          scaleRatio r fac = min 0.9 $ max 0.1 $ r*fac
 
-toTree :: Zipper a -> Tree a
-toTree = fst . top
+-- starting from a leaf, go to node representing a border of the according window
+goToBorder :: Direction2D -> Zipper Split -> Maybe (Zipper Split)
+goToBorder L z@(_, RightCrumb (Split Vertical _) l:cs) = goUp z
+goToBorder L z = goUp z >>= goToBorder L
+goToBorder R z@(_, LeftCrumb  (Split Vertical _) r:cs) = goUp z
+goToBorder R z = goUp z >>= goToBorder R
+goToBorder U z@(_, RightCrumb (Split Horizontal _) l:cs) = goUp z
+goToBorder U z = goUp z >>= goToBorder U
+goToBorder D z@(_, LeftCrumb  (Split Horizontal _) r:cs) = goUp z
+goToBorder D z = goUp z >>= goToBorder D
 
-index :: W.Stack a -> Int
-index s = case toIndex (Just s) of
-            (_, Nothing) -> 0
-            (_, Just int) -> int
 
 data BinarySpacePartition a = BinarySpacePartition { balanceToggle :: Bool
+                                                   , getOldRects :: [(Window,Rectangle)]
                                                    , getTree :: Maybe (Tree Split) } deriving (Show, Read)
 
 -- | an empty BinarySpacePartition to use as a default for adding windows to.
 emptyBSP :: BinarySpacePartition a
-emptyBSP = BinarySpacePartition False Nothing
+emptyBSP = BinarySpacePartition False [] Nothing
 
 makeBSP :: Tree Split -> BinarySpacePartition a
-makeBSP = BinarySpacePartition False . Just
+makeBSP = BinarySpacePartition False [] . Just
 
 makeZipper :: BinarySpacePartition a -> Maybe (Zipper Split)
-makeZipper (BinarySpacePartition _ Nothing) = Nothing
-makeZipper (BinarySpacePartition _ (Just t)) = Just . toZipper $ t
+makeZipper (BinarySpacePartition _ _ Nothing) = Nothing
+makeZipper (BinarySpacePartition _ _ (Just t)) = Just . toZipper $ t
 
 size :: BinarySpacePartition a -> Int
 size = maybe 0 numLeaves . getTree
 
 zipperToBinarySpacePartition :: Maybe (Zipper Split) -> BinarySpacePartition b
 zipperToBinarySpacePartition Nothing = emptyBSP
-zipperToBinarySpacePartition (Just z) = BinarySpacePartition False . Just . toTree . top $ z
+zipperToBinarySpacePartition (Just z) = BinarySpacePartition False [] . Just . toTree . top $ z
 
 rectangles :: BinarySpacePartition a -> Rectangle -> [Rectangle]
-rectangles (BinarySpacePartition _ Nothing) _ = []
-rectangles (BinarySpacePartition _ (Just (Leaf _))) rootRect = [rootRect]
-rectangles (BinarySpacePartition _ (Just node)) rootRect =
+rectangles (BinarySpacePartition _ _ Nothing) _ = []
+rectangles (BinarySpacePartition _ _ (Just (Leaf _))) rootRect = [rootRect]
+rectangles (BinarySpacePartition _ _ (Just node)) rootRect =
     rectangles (makeBSP . left $ node) leftBox ++
     rectangles (makeBSP . right $ node) rightBox
     where (leftBox, rightBox) = split (axis info) (ratio info) rootRect
@@ -352,60 +390,58 @@ doToNth :: (Zipper Split -> Maybe (Zipper Split)) -> BinarySpacePartition a -> I
 doToNth f b n = zipperToBinarySpacePartition $ makeZipper b >>= goToNthLeaf n >>= f
 
 splitNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a
-splitNth (BinarySpacePartition _ Nothing) _ = makeBSP (Leaf 0)
+splitNth (BinarySpacePartition _ _ Nothing) _ = makeBSP (Leaf 0)
 splitNth b n = doToNth splitCurrentLeaf b n
 
 removeNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a
-removeNth (BinarySpacePartition _ Nothing) _ = emptyBSP
-removeNth (BinarySpacePartition _ (Just (Leaf _))) _ = emptyBSP
+removeNth (BinarySpacePartition _ _ Nothing) _ = emptyBSP
+removeNth (BinarySpacePartition _ _ (Just (Leaf _))) _ = emptyBSP
 removeNth b n = doToNth removeCurrentLeaf b n
 
 rotateNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a
-rotateNth (BinarySpacePartition _ Nothing) _ = emptyBSP
-rotateNth b@(BinarySpacePartition _ (Just (Leaf _))) _ = b
+rotateNth (BinarySpacePartition _ _ Nothing) _ = emptyBSP
+rotateNth b@(BinarySpacePartition _ _ (Just (Leaf _))) _ = b
 rotateNth b n = doToNth rotateCurrentLeaf b n
 
 swapNth :: BinarySpacePartition a -> Int -> BinarySpacePartition a
-swapNth (BinarySpacePartition _ Nothing) _ = emptyBSP
-swapNth b@(BinarySpacePartition _ (Just (Leaf _))) _ = b
+swapNth (BinarySpacePartition _ _ Nothing) _ = emptyBSP
+swapNth b@(BinarySpacePartition _ _ (Just (Leaf _))) _ = b
 swapNth b n = doToNth swapCurrentLeaf b n
 
 growNthTowards :: Direction2D -> BinarySpacePartition a -> Int -> BinarySpacePartition a
-growNthTowards _ (BinarySpacePartition _ Nothing) _ = emptyBSP
-growNthTowards _ b@(BinarySpacePartition _ (Just (Leaf _))) _ = b
+growNthTowards _ (BinarySpacePartition _ _ Nothing) _ = emptyBSP
+growNthTowards _ b@(BinarySpacePartition _ _ (Just (Leaf _))) _ = b
 growNthTowards dir b n = doToNth (expandTreeTowards dir) b n
 
 shrinkNthFrom :: Direction2D -> BinarySpacePartition a -> Int -> BinarySpacePartition a
-shrinkNthFrom _ (BinarySpacePartition _ Nothing) _ = emptyBSP
-shrinkNthFrom _ b@(BinarySpacePartition _ (Just (Leaf _))) _ = b
+shrinkNthFrom _ (BinarySpacePartition _ _ Nothing) _ = emptyBSP
+shrinkNthFrom _ b@(BinarySpacePartition _ _ (Just (Leaf _))) _ = b
 shrinkNthFrom dir b n = doToNth (shrinkTreeFrom dir) b n
 
 autoSizeNth :: Direction2D -> BinarySpacePartition a -> Int -> BinarySpacePartition a
-autoSizeNth _ (BinarySpacePartition _ Nothing) _ = emptyBSP
-autoSizeNth _ b@(BinarySpacePartition _ (Just (Leaf _))) _ = b
+autoSizeNth _ (BinarySpacePartition _ _ Nothing) _ = emptyBSP
+autoSizeNth _ b@(BinarySpacePartition _ _ (Just (Leaf _))) _ = b
 autoSizeNth dir b n = doToNth (autoSizeTree dir) b n
+
+resizeSplitNth :: Direction2D -> (Rational,Rational) -> BinarySpacePartition a -> Int -> BinarySpacePartition a
+resizeSplitNth _ _ (BinarySpacePartition _ _ Nothing) _ = emptyBSP
+resizeSplitNth _ _ b@(BinarySpacePartition _ _ (Just (Leaf _))) _ = b
+resizeSplitNth dir sc b n = doToNth (resizeSplit dir sc) b n
 
 -- rotate tree left or right around parent of nth leaf
 rotateTreeNth :: Direction2D -> BinarySpacePartition a -> Int -> BinarySpacePartition a
-rotateTreeNth _ (BinarySpacePartition _ Nothing) _ = emptyBSP
+rotateTreeNth _ (BinarySpacePartition _ _ Nothing) _ = emptyBSP
 rotateTreeNth U b _ = b
 rotateTreeNth D b _ = b
-rotateTreeNth dir b@(BinarySpacePartition _ (Just t)) n =
+rotateTreeNth dir b@(BinarySpacePartition _ _ (Just t)) n =
   doToNth (\t -> case goUp t of
                 Nothing     -> Just t
                 Just (t, c) -> Just (rot dir t, c)) b n
 
--- right or left rotation of a (sub)tree, so effect if rotation not possible
-rot dir (Leaf n) = (Leaf n)
-rot R n@(Node _ (Leaf _) _) = n
-rot L n@(Node _ _ (Leaf _)) = n
-rot R (Node sp (Node sp2 l2 r2) r) = Node sp2 l2 (Node sp r2 r)
-rot L (Node sp l (Node sp2 l2 r2)) = Node sp2 (Node sp l l2) r2
-
 -- swap all siblings along one axis, also invert ratio for symmetry -> "mirror" layout
 flipTree :: Axis -> BinarySpacePartition a -> BinarySpacePartition a
-flipTree ax (BinarySpacePartition _ Nothing) = emptyBSP
-flipTree ax (BinarySpacePartition bal (Just t)) = BinarySpacePartition bal $ Just $ f ax t
+flipTree ax (BinarySpacePartition _ _ Nothing) = emptyBSP
+flipTree ax (BinarySpacePartition bal oldr (Just t)) = BinarySpacePartition bal oldr $ Just $ f ax t
   where f ax (Leaf n) = Leaf n
         f ax (Node sp l r)
          | ax /= axis sp = Node sp{ratio=1 - ratio sp} (f ax r) (f ax l)
@@ -413,8 +449,8 @@ flipTree ax (BinarySpacePartition bal (Just t)) = BinarySpacePartition bal $ Jus
 
 -- tries to AVL-balance given tree (ignoring the balance flag here for reasons!)
 balanceTree :: BinarySpacePartition a -> BinarySpacePartition a
-balanceTree (BinarySpacePartition _ Nothing) = emptyBSP
-balanceTree (BinarySpacePartition bal (Just t)) = BinarySpacePartition bal $ Just $ balance t
+balanceTree (BinarySpacePartition _ _ Nothing) = emptyBSP
+balanceTree (BinarySpacePartition bal oldr (Just t)) = BinarySpacePartition bal oldr $ Just $ balance t
   where balance (Leaf n) = Leaf n
         balance n@(Node s l r)
          | heightDiff n == 2 && heightDiff l == -1 = balance $ Node s (rot L l) r
@@ -429,8 +465,8 @@ balanceTree (BinarySpacePartition bal (Just t)) = BinarySpacePartition bal $ Jus
 
 -- attempt to rotate splits optimally in order choose more quad-like rects
 optimizeOrientation :: Rectangle -> BinarySpacePartition a -> BinarySpacePartition a
-optimizeOrientation r (BinarySpacePartition _ Nothing) = emptyBSP
-optimizeOrientation r (BinarySpacePartition bal (Just t)) = BinarySpacePartition bal $ Just $ opt t r
+optimizeOrientation r (BinarySpacePartition _ _ Nothing) = emptyBSP
+optimizeOrientation r (BinarySpacePartition bal oldr (Just t)) = BinarySpacePartition bal oldr $ Just $ opt t r
   where opt (Leaf v) rect = (Leaf v)
         opt (Node sp l r) rect = Node sp' (opt l lrect) (opt r rrect)
          where (Rectangle _ _ w1 h1,Rectangle _ _ w2 h2) = split (axis sp) (ratio sp) rect
@@ -443,15 +479,15 @@ optimizeOrientation r (BinarySpacePartition bal (Just t)) = BinarySpacePartition
 
 -- traverse and collect all leave numbers, left to right
 flattenLeaves :: BinarySpacePartition a -> [Int]
-flattenLeaves (BinarySpacePartition _ Nothing) = []
-flattenLeaves (BinarySpacePartition _ (Just t)) = flatten t
+flattenLeaves (BinarySpacePartition _ _ Nothing) = []
+flattenLeaves (BinarySpacePartition _ _ (Just t)) = flatten t
  where flatten (Leaf n) = [n]
        flatten (Node _ l r) = flatten l++flatten r
 
 -- we do this before an action to look afterwards which leaves moved where
 numerateLeaves :: BinarySpacePartition a -> BinarySpacePartition a
-numerateLeaves b@(BinarySpacePartition _ Nothing) = b
-numerateLeaves b@(BinarySpacePartition bal (Just t)) = BinarySpacePartition bal . Just . snd $ numerate 0 t
+numerateLeaves b@(BinarySpacePartition _ _ Nothing) = b
+numerateLeaves b@(BinarySpacePartition bal oldr (Just t)) = BinarySpacePartition bal oldr . Just . snd $ numerate 0 t
   where numerate n (Leaf _) = (n+1, Leaf n)
         numerate n (Node s l r) = (n'', Node s nl nr)
           where (n', nl) = numerate n l
@@ -459,10 +495,16 @@ numerateLeaves b@(BinarySpacePartition bal (Just t)) = BinarySpacePartition bal 
 
 -- shift the numbers by an offset -> circulate windows
 circulateLeaves :: Int -> BinarySpacePartition a -> BinarySpacePartition a
-circulateLeaves _ b@(BinarySpacePartition _ Nothing) = b
-circulateLeaves n b@(BinarySpacePartition bal (Just t)) = BinarySpacePartition bal . Just $ circ t
+circulateLeaves _ b@(BinarySpacePartition _ _ Nothing) = b
+circulateLeaves n b@(BinarySpacePartition bal oldr (Just t)) = BinarySpacePartition bal oldr . Just $ circ t
   where circ (Leaf m) = Leaf $ (m+n) `mod` size b
         circ (Node s l r) = Node s (circ l) (circ r)
+
+-- returns index of focused window or 0 for empty stack
+index :: W.Stack a -> Int
+index s = case toIndex (Just s) of
+            (_, Nothing) -> 0
+            (_, Just int) -> int
 
 --move windows to new positions according to tree transformations, keeping focus on originally focused window
 --CAREFUL here! introduce a bug here and have fun debugging as your windows start to disappear or explode
@@ -492,10 +534,21 @@ replaceStack s = do
       wsp  = W.workspace cur
   put st{windowset=wset{W.current=cur{W.workspace=wsp{W.stack=s}}}} --I heard lenses make this better...
 
--- debug str = spawn $ "echo \""++str++"\" >> /tmp/xdebug"
+-- some helpers to filter windows
+getFloating = (M.keys . W.floating) <$> gets windowset -- all floating windows
+getWindowSet = (W.stack . W.workspace . W.current) <$> gets windowset -- windows on this WS (with floating)
+withoutFloating fs = maybe Nothing (unfloat fs)
+isFloating w = getFloating >>= (\fs -> return $ w `elem` fs)
+
+-- ignore messages if current focus is on floating window, otherwise return stack without floating
+unfloat :: [Window] -> W.Stack Window -> Maybe (W.Stack Window)
+unfloat fs s = if W.focus s `elem` fs
+      then Nothing
+      else Just (s { W.up = W.up s \\ fs
+                  , W.down = W.down s \\ fs })
 
 instance LayoutClass BinarySpacePartition Window where
-  doLayout b r s = return (zip ws rs, Just b') where
+  doLayout b r s = return (wrs, Just b'{getOldRects=wrs}) where
     ws = W.integrate s
     layout bsp
       | l == count = bsp{balanceToggle=False} --remove flag after tree is complete
@@ -505,14 +558,17 @@ instance LayoutClass BinarySpacePartition Window where
             bal   = if balanceToggle b then optimizeOrientation r . balanceTree else id
 
     l = length ws
-    n = index s
+    n = if balanceToggle b then 0 else index s --if we are rebuilding tree for balance, insert at start (otherwise glitch)
     b' = layout b
     rs =  rectangles b' r
+    wrs = zip ws rs
 
-  handleMessage b_orig m =
-    do ws <- (W.stack . W.workspace . W.current) <$> gets windowset -- windows on this WS (with floating)
-       fs <- (M.keys . W.floating) <$> gets windowset               -- all floating windows
-       let lws = maybe Nothing (unfloat fs) ws                            -- tiled windows on WS
+  handleMessage b_orig m
+   | Just msg@(SetGeometry _) <- fromMessage m = handleResize b_orig msg  -- support for mouse resize
+   | otherwise = do
+       ws <- getWindowSet
+       fs <- getFloating
+       let lws = withoutFloating fs ws                                    -- tiled windows on WS
            lfs = (maybe [] W.integrate ws) \\ (maybe [] W.integrate lws)  -- untiled windows on WS
            b'  = lws >>= handleMesg         -- transform tree (concerns only tiled windows)
            ws' = adjustStack ws lws lfs b' -- apply transformation to window stack, reintegrate floating
@@ -522,15 +578,11 @@ instance LayoutClass BinarySpacePartition Window where
                               ,fmap (`resize` s)   (fromMessage m)
                               ,fmap (`swap` s)     (fromMessage m)
                               ,fmap (`rotateTr` s) (fromMessage m)
+
                               ,fmap flipTr         (fromMessage m)
                               ,fmap balanceTr      (fromMessage m)
                               ,fmap circTr         (fromMessage m)
                               ]
-          -- ignore messages if current focus is on floating window
-          unfloat fs s = if W.focus s `elem` fs
-                         then Nothing
-                         else Just (s { W.up = W.up s \\ fs
-                                      , W.down = W.down s \\ fs })
 
           b = numerateLeaves b_orig
 
@@ -550,3 +602,39 @@ instance LayoutClass BinarySpacePartition Window where
 
   description _  = "BSP"
 
+-- React to SetGeometry message to work with BorderResize/MouseResize
+handleResize :: BinarySpacePartition Window -> WindowArrangerMsg -> X (Maybe (BinarySpacePartition Window))
+handleResize b (SetGeometry newrect@(Rectangle x y w h)) = do
+  ws <- getWindowSet
+  fs <- getFloating
+  case W.focus <$> ws of
+    Nothing -> return Nothing
+    Just win -> do
+      isfloat <- isFloating win
+      (_,_,_,_,_,mx,my,_) <- withDisplay (\d -> (io $ queryPointer d win))
+      let oldrect@(Rectangle ox oy ow oh) = fromMaybe (Rectangle 0 0 0 0) $ lookup win $ getOldRects b
+      let (xsc,ysc) = (fromIntegral w%fromIntegral ow, fromIntegral h%fromIntegral oh)
+          (xsc',ysc') = (rough xsc, rough ysc)
+          dirs = changedDirs oldrect newrect (fromIntegral mx,fromIntegral my)
+          n = elemIndex win $ maybe [] W.integrate $ withoutFloating fs ws
+
+      -- unless (isNothing dir) $ debug $
+      --       show (fromIntegral x-fromIntegral ox,fromIntegral y-fromIntegral oy)
+      --       ++ show (fromIntegral w-fromIntegral ow,fromIntegral h-fromIntegral oh)
+      --       ++ show dir ++ " " ++ show win ++ " " ++ show (mx,my)
+
+      return $ case n of
+                Just n' -> Just $ foldl' (\b' d -> resizeSplitNth d (xsc',ysc') b' n') b dirs
+                Nothing -> Nothing
+
+  where rough v = min 1.5 $ max 0.75 v -- extreme scale factors are forbidden
+
+-- find out which borders have been pulled. We need the old and new rects and the mouse coordinates
+changedDirs :: Rectangle -> Rectangle -> (Int,Int) -> [Direction2D]
+changedDirs (Rectangle ox oy ow oh) (Rectangle x y w h) (mx,my) = catMaybes [lr, ud]
+ where lr = if ow==w then Nothing
+            else Just (if fromIntegral mx > (fromIntegral ow)/2 then R else L)
+       ud = if oh==h then Nothing
+            else Just (if fromIntegral my > (fromIntegral oh)/2 then D else U)
+
+debug str = spawn $ "echo \""++str++"\" >> /tmp/xdebug"
