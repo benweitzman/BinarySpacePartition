@@ -22,7 +22,6 @@ module XMonad.Layout.BinarySpacePartition (
   , Rotate(..)
   , Swap(..)
   , ResizeDirectional(..)
-  , Circulate(..)
   , TreeRotate(..)
   , TreeFlip(..)
   , TreeBalance(..)
@@ -72,8 +71,6 @@ import Data.Ratio ((%))
 -- > , ((modm .|. altMask .|. ctrlMask , xK_k     ), sendMessage $ ShrinkFrom U)
 -- > , ((modm,                           xK_r     ), sendMessage Rotate)
 -- > , ((modm,                           xK_s     ), sendMessage Swap)
--- > , ((modm,                           xK_f     ), sendMessage CirculateR)
--- > , ((modm,                           xK_b     ), sendMessage CirculateL)
 --
 -- Here's an alternative key mapping, this time using additionalKeysP,
 -- arrow keys, and slightly different behavior when resizing windows
@@ -121,10 +118,6 @@ instance Message TreeRotate
 -- |Message to balance the tree in some way (Balance retiles the windows, Equalize changes ratios)
 data TreeBalance = Balance | Equalize deriving Typeable
 instance Message TreeBalance
-
--- |Message to circulate the windows
-data Circulate = CirculateL | CirculateR deriving Typeable
-instance Message Circulate
 
 -- |Message to control the size of the gap between windows
 data WindowGap = GapSet Int | GapInc Int deriving Typeable
@@ -535,13 +528,6 @@ numerateLeaves b@(BinarySpacePartition g olr (Just t)) = BinarySpacePartition g 
           where (n', nl) = numerate n l
                 (n'', nr) = numerate n' r
 
--- shift the numbers by an offset -> circulate windows
-circulateLeaves :: Int -> BinarySpacePartition a -> BinarySpacePartition a
-circulateLeaves _ b@(BinarySpacePartition _ _ Nothing) = b
-circulateLeaves n b@(BinarySpacePartition g olr (Just t)) = BinarySpacePartition g olr . Just $ circ t
-  where circ (Leaf m) = Leaf $ (m+n) `mod` size b
-        circ (Node s l r) = Node s (circ l) (circ r)
-
 -- returns index of focused window or 0 for empty stack
 index :: W.Stack a -> Int
 index s = case toIndex (Just s) of
@@ -641,7 +627,6 @@ instance LayoutClass BinarySpacePartition Window where
                                 ,fmap (`rotateTr` s) (fromMessage m)
 
                                 ,fmap flipTr         (fromMessage m)
-                                ,fmap circTr         (fromMessage m)
                                 ,fmap (balanceTr r)  (fromMessage m)
                               ]
 
@@ -658,8 +643,6 @@ instance LayoutClass BinarySpacePartition Window where
 
           flipTr FlipH = flipTree Horizontal b
           flipTr FlipV = flipTree Vertical b
-          circTr CirculateL = circulateLeaves 1 b
-          circTr CirculateR = circulateLeaves (-1) b
           balanceTr r Equalize = equalizeTree b
           --TODO: fix glitch
           balanceTr r Balance = last $ take (size b) $ iterate
