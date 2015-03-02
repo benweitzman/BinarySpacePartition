@@ -5,8 +5,8 @@ BinarySpacePartition
 
 * horizontal and vertical flipping
 * two ways to balance the tree
-* circulation of the windows through the layout
 * dynamically adjustible gaps between windows (eye candy)
+* tree transformations also reorder windows, which is more intuitive
 * **support for mouse resizing** (with BorderResize or MouseResize)
 
 ====================
