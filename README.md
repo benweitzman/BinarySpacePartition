@@ -1,9 +1,13 @@
 BinarySpacePartition
 ====================
 
-#### NOTICE: This layout is in the XMonadContrib darcs
-So unless you are making changes or need the latest version I suggest using that. Feel free to make changes
-here and or directly to xmonad contrib through darcs, I will pull down any upstream changes periodically. 
+#### This is an extended fork supporting many new actions:
+
+* horizontal and vertical flipping
+* two ways to balance the tree
+* circulation of the windows through the layout
+* dynamically adjustible gaps between windows (eye candy)
+* **support for mouse resizing** (with BorderResize or MouseResize)
 
 ====================
 
