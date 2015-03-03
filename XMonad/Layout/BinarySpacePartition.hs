@@ -18,14 +18,11 @@ module XMonad.Layout.BinarySpacePartition (
   -- * Usage
   -- $usage
     emptyBSP
-  , emptyBSP'
   , Rotate(..)
   , Swap(..)
   , ResizeDirectional(..)
   , TreeRotate(..)
-  , TreeFlip(..)
   , TreeBalance(..)
-  , WindowGap(..)
   , Direction2D(..)
   ) where
 
@@ -86,11 +83,6 @@ import Data.Ratio ((%))
 -- > , ("M-s",            sendMessage $ BSP.Swap)
 -- > , ("M-M1-s",         sendMessage $ Rotate) ]
 --
--- Sometimes it can be useful to mirror the layout horizontally or vertically:
---
--- > , ((myModMask .|. mod1Mask,  xK_Up),    sendMessage $ FlipH)
--- > , ((myModMask .|. mod1Mask,  xK_Down),  sendMessage $ FlipV)
---
 -- If you have many windows open and the layout begins to look too hard to manage, you can 'Balance'
 -- the layout, so that the current splittings are discarded and windows are tiled freshly in a way that
 -- the split depth is minimized. You can combine this with 'Equalize', which does not change your tree,
@@ -99,17 +91,6 @@ import Data.Ratio ((%))
 -- > , ((myModMask,               xK_a),     sendMessage Balance)
 -- > , ((myModMask .|. shiftMask, xK_a),     sendMessage Equalize)
 --
--- If you want the layout to have gaps between windows from the start, use 'emptyBSP'' instead of
--- 'emptyBSP', which takes the size of the gap between windows as an argument.
---
--- You can change the gap later on the fly, if you set up keybindings for the GapInc message:
--- > , ((myModMask,               xK_g),     sendMessage $ GapInc 2)
--- > , ((myModMask .|. shiftMask, xK_g),     sendMessage $ GapInc (-2))
---
-
--- |Message for flipping the tree (horizontal/vertical mirroring)
-data TreeFlip = FlipH | FlipV deriving Typeable
-instance Message TreeFlip
 
 -- |Message for rotating the binary tree around the parent node of the window to the left or right
 data TreeRotate = RotateL | RotateR deriving Typeable
@@ -118,10 +99,6 @@ instance Message TreeRotate
 -- |Message to balance the tree in some way (Balance retiles the windows, Equalize changes ratios)
 data TreeBalance = Balance | Equalize deriving Typeable
 instance Message TreeBalance
-
--- |Message to control the size of the gap between windows
-data WindowGap = GapSet Int | GapInc Int deriving Typeable
-instance Message WindowGap
 
 -- |Message for resizing one of the cells in the BSP
 data ResizeDirectional = ExpandTowards Direction2D | ShrinkFrom Direction2D | MoveSplit Direction2D deriving Typeable
@@ -379,16 +356,13 @@ goToBorder D z@(_, LeftCrumb  (Split Horizontal _) r:cs) = goUp z
 goToBorder D z = goUp z >>= goToBorder D
 
 
-data BinarySpacePartition a = BinarySpacePartition { getWindowGap :: Int
+data BinarySpacePartition a = BinarySpacePartition { getFocusedNode :: Int --TODO: zipper ?
                                                    , getOldRects :: [(Window,Rectangle)]
                                                    , getTree :: Maybe (Tree Split) } deriving (Show, Read)
 
 -- | an empty BinarySpacePartition to use as a default for adding windows to.
 emptyBSP :: BinarySpacePartition a
 emptyBSP = BinarySpacePartition 0 [] Nothing
-
--- | an empty BinarySpacePartition with a selected gap between windows
-emptyBSP' g = emptyBSP{getWindowGap=g}
 
 makeBSP :: Tree Split -> BinarySpacePartition a
 makeBSP = BinarySpacePartition 0 [] . Just
@@ -464,15 +438,6 @@ rotateTreeNth dir b@(BinarySpacePartition _ _ (Just t)) n =
   doToNth (\t -> case goUp t of
                 Nothing     -> Just t
                 Just (t, c) -> Just (rotTree dir t, c)) b n
-
--- swap all siblings along one axis, also invert ratio for symmetry -> "mirror" layout
-flipTree :: Axis -> BinarySpacePartition a -> BinarySpacePartition a
-flipTree ax (BinarySpacePartition _ _ Nothing) = emptyBSP
-flipTree ax (BinarySpacePartition g olr (Just t)) = BinarySpacePartition g olr $ Just $ f ax t
-  where f ax (Leaf n) = Leaf n
-        f ax (Node sp l r)
-         | ax /= axis sp = Node sp{ratio=1 - ratio sp} (f ax r) (f ax l)
-         | otherwise    = Node sp (f ax l) (f ax r)
 
 -- set the split ratios so that all windows have the same size, without changing tree itself
 equalizeTree :: BinarySpacePartition a -> BinarySpacePartition a
@@ -576,24 +541,11 @@ unfloat fs s = if W.focus s `elem` fs
       else Just (s { W.up = W.up s \\ fs
                   , W.down = W.down s \\ fs })
 
--- as "spacing" modifier does not exactly do what we want, roll our own
-addRectGap :: Rectangle -> Int -> Rectangle -> Rectangle
-addRectGap (Rectangle sx sy sw sh) p (Rectangle x y w h) = Rectangle nx ny nw nh
-  where nx = x + fromIntegral (if x==sx then p else p`div`2)
-        ny = y + fromIntegral (if y==sy then p else p`div`2)
-        nw = w - fromIntegral (nx-x) - fromIntegral (if mx==tx then p else p`div`2)
-        nh = h - fromIntegral (ny-y) - fromIntegral (if my==ty then p else p`div`2)
-        (mx,my) = (fromIntegral x+fromIntegral w, fromIntegral y+fromIntegral h)
-        (tx,ty) = (fromIntegral sx+fromIntegral sw, fromIntegral sy+fromIntegral sh)
-        -- nw = wif x'+w' = fi sw then sw'-(nx-x)
-  -- (fromIntegral x+fromIntegral px) (fromIntegral y+fromIntegral px)
-  --           (fromIntegral w-(2*fromIntegral px)) (fromIntegral h-(2*fromIntegral px))
-
 instance LayoutClass BinarySpacePartition Window where
   doLayout b r s = return (wrs, Just b'{getOldRects=wrs}) where
     ws = W.integrate s
     layout bsp
-      | l == count = bsp{getWindowGap=getWindowGap b}
+      | l == count = bsp{getFocusedNode=getFocusedNode b}
       | l > count = layout $ splitNth bsp n
       | otherwise = layout $ removeNth bsp n
       where count = size bsp
@@ -601,13 +553,10 @@ instance LayoutClass BinarySpacePartition Window where
     l = length ws
     n = index s
     b' = layout b
-    rs =  map (addRectGap r (getWindowGap b)) $ rectangles b' r
+    rs = rectangles b' r
     wrs = zip ws rs
 
   handleMessage b_orig m
-   -- modify gap size
-   | Just (GapSet v) <- fromMessage m = return $ Just b{getWindowGap = max 0 v}
-   | Just (GapInc v) <- fromMessage m = return $ Just b{getWindowGap = max 0 $ getWindowGap b + v}
    -- support for mouse resize
    | Just msg@(SetGeometry _) <- fromMessage m = handleResize b msg >>= return . restoreMeta
    -- other operations
@@ -625,13 +574,11 @@ instance LayoutClass BinarySpacePartition Window where
                                 ,fmap (`resize` s)   (fromMessage m)
                                 ,fmap (`swap` s)     (fromMessage m)
                                 ,fmap (`rotateTr` s) (fromMessage m)
-
-                                ,fmap flipTr         (fromMessage m)
                                 ,fmap (balanceTr r)  (fromMessage m)
                               ]
 
           b = numerateLeaves b_orig
-          restoreMeta = maybe Nothing (\bsp -> Just $ bsp{getWindowGap=getWindowGap b_orig})
+          restoreMeta = maybe Nothing (\bsp -> Just $ bsp{getFocusedNode=getFocusedNode b_orig})
 
           rotate Rotate s = rotateNth b $ index s
           swap Swap s = swapNth b $ index s
@@ -640,9 +587,6 @@ instance LayoutClass BinarySpacePartition Window where
           resize (MoveSplit dir) s = autoSizeNth dir b $ index s
           rotateTr RotateL s = rotateTreeNth L b $ index s
           rotateTr RotateR s = rotateTreeNth R b $ index s
-
-          flipTr FlipH = flipTree Horizontal b
-          flipTr FlipV = flipTree Vertical b
           balanceTr r Equalize = equalizeTree b
           --TODO: fix glitch
           balanceTr r Balance = last $ take (size b) $ iterate
