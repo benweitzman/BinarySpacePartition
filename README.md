@@ -1,13 +1,13 @@
 BinarySpacePartition
 ====================
 
-#### This is an extended fork supporting many new actions:
+#### This is an extended fork with improved behaviour and new actions:
 
-* horizontal and vertical flipping
-* two ways to balance the tree
-* dynamically adjustible gaps between windows (eye candy)
-* tree transformations also reorder windows, which is more intuitive
+* two ways to balance the tree (retile and readjust ratio)
+* tree transformations like swap and rotate also affect windows, which is more intuitive
 * **support for mouse resizing** (with BorderResize or MouseResize)
+* **FocusParent** message to select a group of windows for an action instead of a single one for better
+  control (sometimes without this swap or rotate just are not possible)
 
 ====================
 
