@@ -1,13 +1,9 @@
 BinarySpacePartition
 ====================
 
-#### This is an extended fork with improved behaviour and new actions:
-
-* two ways to balance the tree (retile and readjust ratio)
-* tree transformations like swap and rotate also affect windows, which is more intuitive
-* **support for mouse resizing** (with BorderResize or MouseResize)
-* **FocusParent** message to select a group of windows for an action instead of a single one for better
-  control (sometimes without this swap or rotate just are not possible)
+#### NOTICE: This layout is in the XMonadContrib darcs
+So unless you are making changes or need the latest version I suggest using that. Feel free to make changes
+here and or directly to xmonad contrib through darcs, I will pull down any upstream changes periodically.
 
 ====================
 
@@ -24,9 +20,12 @@ The layout provides the following messages:
 * `Swap` which swaps to sibling nodes
 * `ExpandTowards dir` which takes a Direction2D argument (`U`, `D`, `L`, `R`) and expands the selected window's border
 in that direction
+* `FocusParent` to select a group of windows for an action instead of a single one for better control (sometimes without this, swap or rotate just are not possible) 
 * `ShrinkFrom dir` which takes a Direction2D argument and shrinks the selected window's border from that direction
-* `MoveSplit dir` which takes a Direction2D argument and tries to intelligently move some border in that direction. 
-This mode seems a bitmore intuitive to some people.
+* `MoveSplit dir` which takes a Direction2D argument and tries to intelligently move some border in that direction.
+  This mode seems a bitmore intuitive to some people.
+
+There's also support for mouse resizing  
 
 To use BSP, import the module in your `~/.xmonad/xmonad.hs` file:
 
@@ -89,3 +88,9 @@ There are some more operations you might find useful:
 ```
 
 ![gif demo](http://i.imgur.com/6VpHKAU.gif)
+
+============
+
+## Contributors:
+
+[apirogov](https://github.com/apirogov)
