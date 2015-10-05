@@ -1,9 +1,13 @@
 BinarySpacePartition
 ====================
 
-#### NOTICE: This layout is in the XMonadContrib darcs
-So unless you are making changes or need the latest version I suggest using that. Feel free to make changes
-here and or directly to xmonad contrib through darcs, I will pull down any upstream changes periodically. 
+#### This is an extended fork with improved behaviour and new actions:
+
+* two ways to balance the tree (retile and readjust ratio)
+* tree transformations like swap and rotate also affect windows, which is more intuitive
+* **support for mouse resizing** (with BorderResize or MouseResize)
+* **FocusParent** message to select a group of windows for an action instead of a single one for better
+  control (sometimes without this swap or rotate just are not possible)
 
 ====================
 
@@ -72,4 +76,16 @@ And to use the alternate resizing mode:
 ```
 , ((myModKey .|. controlMask, xK_Left   ), sendMessage $ MoveSplit L)
 ```
+
+There are some more operations you might find useful:
+```
+, ((myModMask .|. mod1Mask,  xK_Up),    sendMessage $ FlipH)
+, ((myModMask .|. mod1Mask,  xK_Down),  sendMessage $ FlipV)
+, ((myModMask .|. mod1Mask,  xK_Right), sendMessage $ RotateR)
+, ((myModMask .|. mod1Mask,  xK_Left),  sendMessage $ RotateL)
+, ((myModMask, xK_a), sendMessage Balance)
+, ((myModMask, xK_f), sendMessage CirculateR)
+, ((myModMask, xK_g), sendMessage CirculateL)
+```
+
 ![gif demo](http://i.imgur.com/6VpHKAU.gif)
