@@ -111,7 +111,12 @@ data TreeBalance = Balance | Equalize deriving Typeable
 instance Message TreeBalance
 
 -- |Message for resizing one of the cells in the BSP
-data ResizeDirectional = ExpandTowards Direction2D | ShrinkFrom Direction2D | MoveSplit Direction2D deriving Typeable
+data ResizeDirectional = ExpandTowardsDelta Rational Direction2D
+                       | ExpandTowards Direction2D
+                       | ShrinkFromDelta Rational Direction2D
+                       | ShrinkFrom Direction2D
+                       | MoveSplitDelta Rational Direction2D
+                       | MoveSplit Direction2D deriving (Typeable)
 instance Message ResizeDirectional
 
 -- |Message for rotating a split (horizontal/vertical) in the BSP
@@ -170,7 +175,6 @@ increaseRatio (Split d r) delta = Split d (min 0.9 (max 0.1 (r + delta)))
 
 resizeDiff :: Rational
 resizeDiff = 0.05
-
 
 data Tree a = Leaf Int | Node { value :: a
                           , left :: Tree a
@@ -289,57 +293,57 @@ isAllTheWay U (_, RightCrumb s _:_)
   | axis s == Horizontal = False
 isAllTheWay dir z = fromMaybe False $ goUp z >>= Just . isAllTheWay dir
 
-expandTreeTowards :: Direction2D -> Zipper Split -> Maybe (Zipper Split)
-expandTreeTowards _ z@(_, []) = Just z
-expandTreeTowards dir z
-  | isAllTheWay dir z = shrinkTreeFrom (oppositeDirection dir) z
-expandTreeTowards R (t, LeftCrumb s r:cs)
-  | axis s == Vertical = Just (t, LeftCrumb (increaseRatio s resizeDiff) r:cs)
-expandTreeTowards L (t, RightCrumb s l:cs)
-  | axis s == Vertical = Just (t, RightCrumb (increaseRatio s (-resizeDiff)) l:cs)
-expandTreeTowards D (t, LeftCrumb s r:cs)
-  | axis s == Horizontal = Just (t, LeftCrumb (increaseRatio s resizeDiff) r:cs)
-expandTreeTowards U (t, RightCrumb s l:cs)
-  | axis s == Horizontal = Just (t, RightCrumb (increaseRatio s (-resizeDiff)) l:cs)
-expandTreeTowards dir z = goUp z >>= expandTreeTowards dir
+expandTreeTowards :: Rational -> Direction2D -> Zipper Split -> Maybe (Zipper Split)
+expandTreeTowards _ _ z@(_, []) = Just z
+expandTreeTowards diff dir z
+  | isAllTheWay dir z = shrinkTreeFrom diff (oppositeDirection dir) z
+expandTreeTowards diff R (t, LeftCrumb s r:cs)
+  | axis s == Vertical = Just (t, LeftCrumb (increaseRatio s diff) r:cs)
+expandTreeTowards diff L (t, RightCrumb s l:cs)
+  | axis s == Vertical = Just (t, RightCrumb (increaseRatio s (-diff)) l:cs)
+expandTreeTowards diff D (t, LeftCrumb s r:cs)
+  | axis s == Horizontal = Just (t, LeftCrumb (increaseRatio s diff) r:cs)
+expandTreeTowards diff U (t, RightCrumb s l:cs)
+  | axis s == Horizontal = Just (t, RightCrumb (increaseRatio s (-diff)) l:cs)
+expandTreeTowards diff dir z = goUp z >>= expandTreeTowards diff dir
 
-shrinkTreeFrom :: Direction2D -> Zipper Split -> Maybe (Zipper Split)
-shrinkTreeFrom _ z@(_, []) = Just z
-shrinkTreeFrom R z@(_, LeftCrumb s _:_)
-  | axis s == Vertical = Just z >>= goSibling >>= expandTreeTowards L
-shrinkTreeFrom L z@(_, RightCrumb s _:_)
-  | axis s == Vertical = Just z >>= goSibling >>= expandTreeTowards R
-shrinkTreeFrom D z@(_, LeftCrumb s _:_)
-  | axis s == Horizontal = Just z >>= goSibling >>= expandTreeTowards U
-shrinkTreeFrom U z@(_, RightCrumb s _:_)
-  | axis s == Horizontal = Just z >>= goSibling >>= expandTreeTowards D
-shrinkTreeFrom dir z = goUp z >>= shrinkTreeFrom dir
+shrinkTreeFrom :: Rational -> Direction2D -> Zipper Split -> Maybe (Zipper Split)
+shrinkTreeFrom _ _ z@(_, []) = Just z
+shrinkTreeFrom diff R z@(_, LeftCrumb s _:_)
+  | axis s == Vertical = Just z >>= goSibling >>= expandTreeTowards diff L
+shrinkTreeFrom diff L z@(_, RightCrumb s _:_)
+  | axis s == Vertical = Just z >>= goSibling >>= expandTreeTowards diff R
+shrinkTreeFrom diff D z@(_, LeftCrumb s _:_)
+  | axis s == Horizontal = Just z >>= goSibling >>= expandTreeTowards diff U
+shrinkTreeFrom diff U z@(_, RightCrumb s _:_)
+  | axis s == Horizontal = Just z >>= goSibling >>= expandTreeTowards diff D
+shrinkTreeFrom diff dir z = goUp z >>= shrinkTreeFrom diff dir
 
 -- Direction2D refers to which direction the divider should move.
-autoSizeTree :: Direction2D -> Zipper Split -> Maybe (Zipper Split)
-autoSizeTree _ z@(_, []) = Just z
-autoSizeTree d z =
-    Just z >>= getSplit (toAxis d) >>= resizeTree d
+autoSizeTree :: Rational -> Direction2D -> Zipper Split -> Maybe (Zipper Split)
+autoSizeTree _ _ z@(_, []) = Just z
+autoSizeTree diff d z =
+    Just z >>= getSplit (toAxis d) >>= resizeTree diff d
 
 -- resizing once found the correct split. YOU MUST FIND THE RIGHT SPLIT FIRST.
-resizeTree :: Direction2D -> Zipper Split -> Maybe (Zipper Split)
-resizeTree _ z@(_, []) = Just z
-resizeTree R z@(_, LeftCrumb _ _:_) =
-  Just z >>= expandTreeTowards R
-resizeTree L z@(_, LeftCrumb _ _:_) =
-  Just z >>= shrinkTreeFrom    R
-resizeTree U z@(_, LeftCrumb _ _:_) =
-  Just z >>= shrinkTreeFrom    D
-resizeTree D z@(_, LeftCrumb _ _:_) =
-  Just z >>= expandTreeTowards D
-resizeTree R z@(_, RightCrumb _ _:_) =
-  Just z >>= shrinkTreeFrom    L
-resizeTree L z@(_, RightCrumb _ _:_) =
-  Just z >>= expandTreeTowards L
-resizeTree U z@(_, RightCrumb _ _:_) =
-  Just z >>= expandTreeTowards U
-resizeTree D z@(_, RightCrumb _ _:_) =
-  Just z >>= shrinkTreeFrom    U
+resizeTree :: Rational -> Direction2D -> Zipper Split -> Maybe (Zipper Split)
+resizeTree _ _ z@(_, []) = Just z
+resizeTree diff R z@(_, LeftCrumb _ _:_) =
+  Just z >>= expandTreeTowards diff R
+resizeTree diff L z@(_, LeftCrumb _ _:_) =
+  Just z >>= shrinkTreeFrom    diff R
+resizeTree diff U z@(_, LeftCrumb _ _:_) =
+  Just z >>= shrinkTreeFrom    diff D
+resizeTree diff D z@(_, LeftCrumb _ _:_) =
+  Just z >>= expandTreeTowards diff D
+resizeTree diff R z@(_, RightCrumb _ _:_) =
+  Just z >>= shrinkTreeFrom    diff L
+resizeTree diff L z@(_, RightCrumb _ _:_) =
+  Just z >>= expandTreeTowards diff L
+resizeTree diff U z@(_, RightCrumb _ _:_) =
+  Just z >>= expandTreeTowards diff U
+resizeTree diff D z@(_, RightCrumb _ _:_) =
+  Just z >>= shrinkTreeFrom    diff U
 
 getSplit :: Axis -> Zipper Split -> Maybe (Zipper Split)
 getSplit _ (_, []) = Nothing
@@ -522,20 +526,20 @@ swapNth (BinarySpacePartition _ _ _ Nothing) = emptyBSP
 swapNth b@(BinarySpacePartition _ _ _ (Just (Leaf _))) = b
 swapNth b = doToNth swapCurrent b
 
-growNthTowards :: Direction2D -> BinarySpacePartition a -> BinarySpacePartition a
-growNthTowards _ (BinarySpacePartition _ _ _ Nothing) = emptyBSP
-growNthTowards _ b@(BinarySpacePartition _ _ _ (Just (Leaf _))) = b
-growNthTowards dir b = doToNth (expandTreeTowards dir) b
+growNthTowards :: Rational -> Direction2D -> BinarySpacePartition a -> BinarySpacePartition a
+growNthTowards _ _ (BinarySpacePartition _ _ _ Nothing) = emptyBSP
+growNthTowards _ _ b@(BinarySpacePartition _ _ _ (Just (Leaf _))) = b
+growNthTowards diff dir b = doToNth (expandTreeTowards diff dir) b
 
-shrinkNthFrom :: Direction2D -> BinarySpacePartition a -> BinarySpacePartition a
-shrinkNthFrom _ (BinarySpacePartition _ _ _ Nothing)= emptyBSP
-shrinkNthFrom _ b@(BinarySpacePartition _ _ _ (Just (Leaf _))) = b
-shrinkNthFrom dir b = doToNth (shrinkTreeFrom dir) b
+shrinkNthFrom :: Rational -> Direction2D -> BinarySpacePartition a -> BinarySpacePartition a
+shrinkNthFrom _ _ (BinarySpacePartition _ _ _ Nothing)= emptyBSP
+shrinkNthFrom _ _ b@(BinarySpacePartition _ _ _ (Just (Leaf _))) = b
+shrinkNthFrom diff dir b = doToNth (shrinkTreeFrom diff dir) b
 
-autoSizeNth :: Direction2D -> BinarySpacePartition a -> BinarySpacePartition a
-autoSizeNth _ (BinarySpacePartition _ _ _ Nothing) = emptyBSP
-autoSizeNth _ b@(BinarySpacePartition _ _ _ (Just (Leaf _))) = b
-autoSizeNth dir b = doToNth (autoSizeTree dir) b
+autoSizeNth :: Rational -> Direction2D -> BinarySpacePartition a -> BinarySpacePartition a
+autoSizeNth _ _ (BinarySpacePartition _ _ _ Nothing) = emptyBSP
+autoSizeNth _ _ b@(BinarySpacePartition _ _ _ (Just (Leaf _))) = b
+autoSizeNth diff dir b = doToNth (autoSizeTree diff dir) b
 
 resizeSplitNth :: Direction2D -> (Rational,Rational) -> BinarySpacePartition a -> BinarySpacePartition a
 resizeSplitNth _ _ (BinarySpacePartition _ _ _ Nothing) = emptyBSP
@@ -697,9 +701,12 @@ instance LayoutClass BinarySpacePartition Window where
                               , fmap (balanceTr r) (fromMessage m)
                               , fmap move          (fromMessage m)
                               ]
-          resize (ExpandTowards dir) = growNthTowards dir b
-          resize (ShrinkFrom dir) = shrinkNthFrom dir b
-          resize (MoveSplit dir) = autoSizeNth dir b
+          resize (ExpandTowardsDelta diff dir) = growNthTowards diff dir b
+          resize (ExpandTowards dir) = growNthTowards resizeDiff dir b
+          resize (ShrinkFromDelta diff dir) = shrinkNthFrom diff dir b
+          resize (ShrinkFrom dir) = shrinkNthFrom resizeDiff dir b
+          resize (MoveSplitDelta diff dir) = autoSizeNth diff dir b
+          resize (MoveSplit dir) = autoSizeNth resizeDiff dir b
           rotate Rotate = resetFoc $ rotateNth b
           swap Swap = resetFoc $ swapNth b
           rotateTr RotateL = resetFoc $ rotateTreeNth L b
