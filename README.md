@@ -20,12 +20,15 @@ The layout provides the following messages:
 * `Swap` which swaps to sibling nodes
 * `ExpandTowards dir` which takes a Direction2D argument (`U`, `D`, `L`, `R`) and expands the selected window's border
 in that direction
-* `FocusParent` to select a group of windows for an action instead of a single one for better control (sometimes without this, swap or rotate just are not possible) 
+* `ExpandTowardsDelta delta dir` which takes a Rational `delta` and Direction2D argument and expands the selected window's border in that direction by `delta` of the corresponding screen dimension
+* `FocusParent` to select a group of windows for an action instead of a single one for better control (sometimes without this, swap or rotate just are not possible)
 * `ShrinkFrom dir` which takes a Direction2D argument and shrinks the selected window's border from that direction
-* `MoveSplit dir` which takes a Direction2D argument and tries to intelligently move some border in that direction.
+* `ShrinkFromDelta delta dir` which takes a Rational `delta` and Direction2D argument and shrinks the selected window's border from that direction by `delta` of the corresponding screen dimension
+* `MoveSplit dir` which takes a Direction2D argument and tries to intelligently move some border in that direction
+* `MoveSplitDelta delta dir` which takes a Rational `delta` Direction2D argument and tries to intelligently move some border in that direction by `delta` of the corresponding screen dimension
   This mode seems a bitmore intuitive to some people.
 
-There's also support for mouse resizing  
+There's also support for mouse resizing
 
 To use BSP, import the module in your `~/.xmonad/xmonad.hs` file:
 
